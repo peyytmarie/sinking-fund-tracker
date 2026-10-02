@@ -40,7 +40,7 @@ function defaultState() {
     settings: {
       fundName: 'Sinking Fund',
       year: new Date().getFullYear(),
-      perHead: 500,
+      perHead: 300, // minimum contribution per head per payday
       frequency: 'semimonthly', // or 'monthly'
       startMonth: 1,
       rates: { 1: 5, 2: 4, 3: 3 }, // % per month, by term in months
@@ -104,6 +104,10 @@ const memberById = id => state.members.find(m => m.id === id);
 const memberName = id => memberById(id)?.name || '(removed member)';
 const openingCarryOver = () => Number(S().openingByYear[Y()] || 0);
 const rateFor = term => Number(S().rates[term] || 0);
+const minDues = m => round2((Number(m.heads) || 0) * S().perHead);
+/** What a member pays each payday: their chosen amount, never below the minimum for their heads. */
+const duesOf = m => Math.max(round2(Number(m.amount) || 0), minDues(m));
+const perPayday = () => (S().frequency === 'monthly' ? 'month' : 'payday');
 
 // ---------- calculations ----------
 function loanInfo(loan, asOf = todayISO()) {
@@ -200,8 +204,8 @@ function compute({ includeRemainingDues = false } = {}) {
   const rows = members.map(m => {
     const heads = Number(m.heads) || 0;
     const contrib = round2(sum(contribsY.filter(c => c.memberId === m.id), c => c.amount));
-    const expected = round2(heads * s.perHead * periodsDue(today, m.joined));
-    const expectedFull = round2(heads * s.perHead * periodsDue(`${Y()}-12-31`, m.joined));
+    const expected = round2(duesOf(m) * periodsDue(today, m.joined));
+    const expectedFull = round2(duesOf(m) * periodsDue(`${Y()}-12-31`, m.joined));
     const remainingDues = round2(Math.max(0, expectedFull - contrib));
     const memberLoans = openLoans.filter(li => li.loan.memberId === m.id);
     const loanBalance = round2(sum(memberLoans, li => li.balance));
@@ -403,7 +407,7 @@ const views = {
         ${kpi('Total fund value', fmt(c.fundValue), 'Cash on hand + unpaid loan principal', 'primary')}
         ${kpi('Cash on hand', fmt(c.cash), 'Available for new loans')}
         ${kpi('Loans receivable', fmt(c.principalOutstanding), `${c.openLoans.length} open loan${c.openLoans.length === 1 ? '' : 's'} · +${fmt(c.interestReceivable)} interest to collect`)}
-        ${kpi(`Contributions ${Y()}`, fmt(c.totalContrib), `${fmt(S().perHead)} per head, ${S().frequency === 'monthly' ? 'monthly' : 'twice a month'}`)}
+        ${kpi(`Contributions ${Y()}`, fmt(c.totalContrib), `${fmt(sum(state.members, duesOf))} due per ${perPayday()} · paid ${S().frequency === 'monthly' ? 'monthly' : 'twice a month'}`)}
         ${kpi('Interest earned', fmt(c.interestCollected), `Collected so far · ${fmt(c.interestTotal)} expected incl. open loans`)}
         ${kpi('Earnings per head (proj.)', fmt(c.earningsPerHead), `${c.totalHeads} heads · interest${c.opening ? ' + carry-over' : ''}${c.otherNet ? ' + other' : ''}`)}
         ${kpi(`Carry-over to ${Number(Y()) + 1} (proj.)`, fmt(c.retained), `${S().retentionPct}% of ${fmt(c.totalBalance)}`)}
@@ -471,12 +475,12 @@ const views = {
           <div class="actions"><button class="primary" data-action="add-member">+ Add member</button></div>
         </div>
         ${state.members.length ? `<div class="card table-wrap"><table>
-          <thead><tr><th>Name</th><th class="num">Heads</th><th class="num">Dues per period</th><th>Joined</th>
+          <thead><tr><th>Name</th><th class="num">Heads</th><th class="num">Amount per ${perPayday()}</th><th>Joined</th>
             <th class="num">Contributed ${Y()}</th><th class="num">Loan balance</th><th>Notes</th><th></th></tr></thead>
           <tbody>${c.rows.map(r => `<tr>
             <td><strong>${esc(r.member.name)}</strong></td>
             <td class="num">${r.heads}</td>
-            <td class="num">${fmt(r.heads * S().perHead)}</td>
+            <td class="num">${fmt(duesOf(r.member))}</td>
             <td>${r.member.joined ? fmtDate(r.member.joined) : '<span class="muted">—</span>'}</td>
             <td class="num">${fmt(r.contrib)}</td>
             <td class="num">${r.loanBalance > EPS ? fmt(r.loanBalance) : '<span class="muted">—</span>'}</td>
@@ -486,9 +490,9 @@ const views = {
               <button class="sm" data-action="edit-member" data-id="${r.member.id}">Edit</button>
               <button class="sm danger" data-action="delete-member" data-id="${r.member.id}">Delete</button>
             </div></td></tr>`).join('')}</tbody>
-          <tfoot><tr><td>${state.members.length} members</td><td class="num">${c.totalHeads}</td><td class="num">${fmt(c.totalHeads * S().perHead)}</td><td colspan="5"></td></tr></tfoot>
+          <tfoot><tr><td>${state.members.length} members</td><td class="num">${c.totalHeads}</td><td class="num">${fmt(sum(state.members, duesOf))}</td><td colspan="5"></td></tr></tfoot>
         </table></div>` : emptyState('No members yet.', '<button class="primary" data-action="add-member">Add first member</button>')}
-        <p class="small muted" style="margin-top:6px">Each head pays ${fmt(S().perHead)} per period and gets one equal share of the interest earnings.</p>
+        <p class="small muted" style="margin-top:6px">Each member chooses a fixed amount per ${perPayday()} (minimum ${fmt(S().perHead)} per head). Interest is shared equally per head, whatever the amount.</p>
       </section>`;
   },
 
@@ -503,7 +507,7 @@ const views = {
       const cells = months.map(mo => round2(sum(contribsY.filter(x => x.memberId === m.id && Number(x.date.slice(5, 7)) === mo), x => x.amount)));
       return { m, cells, total: round2(sum(cells, x => x)) };
     });
-    const monthlyDue = h => h * S().perHead * (S().frequency === 'monthly' ? 1 : 2);
+    const monthlyDue = m => duesOf(m) * (S().frequency === 'monthly' ? 1 : 2);
 
     return `
       <section class="section">
@@ -519,7 +523,7 @@ const views = {
             <thead><tr><th>Member</th>${months.map(m => `<th class="num">${MONTHS[m - 1]}</th>`).join('')}<th class="num">Total</th></tr></thead>
             <tbody>${grid.map(g => `<tr><td>${esc(g.m.name)} <span class="muted small">×${g.m.heads}</span></td>
               ${g.cells.map(v => {
-                const due = monthlyDue(g.m.heads);
+                const due = monthlyDue(g.m);
                 const cls = v <= EPS ? 'muted' : v + EPS < due ? 'warn' : 'good';
                 return `<td class="num ${cls}">${v > EPS ? fmt(v) : '—'}</td>`;
               }).join('')}
@@ -725,7 +729,7 @@ const views = {
               <select id="year" name="year">${[...years].sort().map(y => `<option ${y === Y() ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
             <div class="field"><label for="startMonth">First contribution month</label>
               <select id="startMonth" name="startMonth">${MONTHS.map((m, i) => `<option value="${i + 1}" ${s.startMonth == i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
-            <div class="field"><label for="perHead">Contribution per head (₱)</label><input id="perHead" name="perHead" type="number" min="0" step="0.01" value="${s.perHead}"></div>
+            <div class="field"><label for="perHead">Minimum per head per payday (₱)</label><input id="perHead" name="perHead" type="number" min="0" step="0.01" value="${s.perHead}"></div>
             <div class="field"><label for="frequency">Schedule</label>
               <select id="frequency" name="frequency">
                 <option value="semimonthly" ${s.frequency === 'semimonthly' ? 'selected' : ''}>Twice a month (15th & 30th)</option>
@@ -778,22 +782,37 @@ function memberForm(m = {}) {
     <div class="field"><label for="f-name">Name</label><input id="f-name" name="name" value="${esc(m.name || '')}" required></div>
     <div class="fields">
       <div class="field"><label for="f-heads">Number of heads</label><input id="f-heads" name="heads" type="number" min="1" step="1" value="${m.heads || 1}">
-        <div class="help">Dues: ${fmt(S().perHead)} × heads per period</div></div>
+        <div class="help">Each head gets an equal share of interest</div></div>
+      <div class="field"><label for="f-amount">Amount per ${perPayday()} (₱)</label><input id="f-amount" name="amount" type="number" min="0" step="0.01" value="${m.id ? duesOf(m) : S().perHead}">
+        <div class="help" id="f-min-help"></div></div>
       <div class="field"><label for="f-joined">Joined (optional)</label><input id="f-joined" name="joined" type="date" value="${m.joined || ''}">
         <div class="help">Dues are counted from this month</div></div>
     </div>
     <div class="field"><label for="f-notes">Notes</label><input id="f-notes" name="notes" value="${esc(m.notes || '')}"></div>`;
 }
 
+function memberInput(form) {
+  const heads = parseInt(form.heads.value, 10) || 1;
+  const min = round2(heads * S().perHead);
+  const amt = parseAmount(form.amount.value);
+  const help = form.querySelector('#f-min-help');
+  help.textContent = `Minimum ${fmt(min)} (${fmt(S().perHead)} × ${heads} head${heads > 1 ? 's' : ''})`;
+  help.classList.toggle('bad', amt < min);
+}
+
 function saveMember(existing) {
   return d => {
     const name = d.name.trim();
     const heads = parseInt(d.heads, 10);
+    const amount = parseAmount(d.amount);
     if (!name) return fail('Please enter a name.');
     if (!(heads >= 1)) return fail('Heads must be at least 1.');
+    const min = round2(heads * S().perHead);
+    if (!(amount >= min)) return fail(`The minimum for ${heads} head${heads > 1 ? 's' : ''} is ${fmt(min)} per ${perPayday()}.`);
     if (state.members.some(m => m.name.toLowerCase() === name.toLowerCase() && m.id !== existing?.id)) return fail('A member with this name already exists.');
-    if (existing) Object.assign(existing, { name, heads, joined: d.joined || '', notes: d.notes.trim() });
-    else state.members.push({ id: uid(), name, heads, joined: d.joined || '', notes: d.notes.trim(), ts: Date.now() });
+    const rec = { name, heads, amount, joined: d.joined || '', notes: d.notes.trim() };
+    if (existing) Object.assign(existing, rec);
+    else state.members.push({ id: uid(), ts: Date.now(), ...rec });
     commit(existing ? 'Member updated' : 'Member added');
   };
 }
@@ -804,7 +823,7 @@ function contributionForm(x = {}) {
     <div class="field"><label for="f-member">Member</label><select id="f-member" name="memberId" required>${memberOptions(x.memberId)}</select></div>
     <div class="fields">
       <div class="field"><label for="f-date">Date</label><input id="f-date" name="date" type="date" value="${x.date || defaultDateInYear()}" required></div>
-      <div class="field"><label for="f-amount">Amount (₱)</label><input id="f-amount" name="amount" type="number" min="0.01" step="0.01" value="${x.amount ?? (m ? m.heads * S().perHead : '')}" required>
+      <div class="field"><label for="f-amount">Amount (₱)</label><input id="f-amount" name="amount" type="number" min="0.01" step="0.01" value="${x.amount ?? (m ? duesOf(m) : '')}" required>
         <div class="help" id="f-due-help"></div></div>
     </div>
     <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" value="${esc(x.note || '')}" placeholder="e.g. Oct 15 dues, GCash"></div>`;
@@ -814,8 +833,8 @@ function contributionInput(isEdit) {
   let lastMember = null;
   return form => {
     const m = memberById(form.memberId.value);
-    form.querySelector('#f-due-help').textContent = m ? `Dues per period: ${fmt(m.heads * S().perHead)}` : '';
-    if (!isEdit && m && m.id !== lastMember) form.amount.value = m.heads * S().perHead;
+    form.querySelector('#f-due-help').textContent = m ? `Their amount per ${perPayday()}: ${fmt(duesOf(m))}` : '';
+    if (!isEdit && m && m.id !== lastMember) form.amount.value = duesOf(m);
     lastMember = m?.id || null;
   };
 }
@@ -948,17 +967,17 @@ function bulkForm() {
       <div class="field"><label for="f-date">Date</label><input id="f-date" name="date" type="date" value="${defaultDateInYear()}" required></div>
       <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" placeholder="e.g. Oct 15 dues"></div>
     </div>
-    <p class="small muted" style="margin-bottom:8px">Each checked member is recorded for their full dues (heads × ${fmt(S().perHead)}).</p>
+    <p class="small muted" style="margin-bottom:8px">Each checked member is recorded for their own amount per ${perPayday()}.</p>
     <div class="checklist">
       ${[...state.members].sort((a, b) => a.name.localeCompare(b.name)).map(m => `
-        <label><input type="checkbox" name="ids" value="${m.id}" checked> ${esc(m.name)} <span class="amt num muted">${fmt(m.heads * S().perHead)}</span></label>`).join('')}
+        <label><input type="checkbox" name="ids" value="${m.id}" checked> ${esc(m.name)} <span class="amt num muted">${fmt(duesOf(m))}</span></label>`).join('')}
     </div>`;
 }
 
 // ---------- actions ----------
 const actions = {
-  'add-member': () => openModal({ title: 'Add member', body: memberForm(), onSubmit: saveMember(null) }),
-  'edit-member': ({ id }) => { const m = memberById(id); openModal({ title: 'Edit member', body: memberForm(m), onSubmit: saveMember(m) }); },
+  'add-member': () => openModal({ title: 'Add member', body: memberForm(), onSubmit: saveMember(null), onInput: memberInput }),
+  'edit-member': ({ id }) => { const m = memberById(id); openModal({ title: 'Edit member', body: memberForm(m), onSubmit: saveMember(m), onInput: memberInput }); },
   'delete-member': ({ id }) => {
     const m = memberById(id);
     const has = state.contributions.some(x => x.memberId === id) || state.loans.some(x => x.memberId === id);
@@ -995,7 +1014,7 @@ const actions = {
       const ts = Date.now();
       ids.forEach((id, i) => {
         const m = memberById(id);
-        state.contributions.push({ id: uid(), ts: ts + i, memberId: id, date: d.date, amount: round2(m.heads * S().perHead), note: d.note.trim() });
+        state.contributions.push({ id: uid(), ts: ts + i, memberId: id, date: d.date, amount: duesOf(m), note: d.note.trim() });
       });
       commit(`Recorded dues for ${ids.length} member${ids.length > 1 ? 's' : ''}`);
     },
@@ -1227,7 +1246,7 @@ view.addEventListener('submit', e => {
   const retention = parseFloat(f.retentionPct);
   const rates = [1, 2, 3].map(t => parseFloat(f['rate' + t]));
   if (!f.fundName.trim()) return alert('Please enter a fund name.');
-  if (!(perHead >= 0)) return alert('Contribution per head must be a number.');
+  if (!(perHead >= 0)) return alert('Minimum contribution must be a number.');
   if (!(retention >= 0 && retention <= 100)) return alert('Retention must be between 0 and 100%.');
   if (rates.some(r => !(r >= 0))) return alert('Interest rates must be numbers.');
   s.fundName = f.fundName.trim();
@@ -1256,8 +1275,8 @@ window.addEventListener('storage', e => { if (e.key === STORAGE_KEY) { state = l
 function sampleData() {
   const s = defaultState();
   const year = Number(s.settings.year);
-  const names = [['Faith', 2], ['Ana', 1], ['Ben', 3], ['Carla', 1], ['Dan', 2]];
-  s.members = names.map(([name, heads], i) => ({ id: uid(), name, heads, joined: '', notes: '', ts: i }));
+  const names = [['Faith', 2, 1000], ['Ana', 1, 300], ['Ben', 3, 1500], ['Carla', 1, 500], ['Dan', 2, 600]];
+  s.members = names.map(([name, heads, amount], i) => ({ id: uid(), name, heads, amount, joined: '', notes: '', ts: i }));
   const today = todayISO();
   let ts = 1;
   for (let m = 1; m <= 12; m++) {
@@ -1266,7 +1285,7 @@ function sampleData() {
       if (date > today) continue;
       s.members.forEach((mem, i) => {
         if (mem.name === 'Carla' && m >= 8 && day !== 15) return; // someone falling behind
-        s.contributions.push({ id: uid(), ts: ts++, memberId: mem.id, date, amount: mem.heads * s.settings.perHead, note: '' });
+        s.contributions.push({ id: uid(), ts: ts++, memberId: mem.id, date, amount: mem.amount, note: '' });
       });
     }
   }

@@ -35,7 +35,7 @@ In both modes, use **Settings → Export backup** regularly and keep the `.json`
 
 | Rule | Setting |
 |---|---|
-| Contribution | Fixed amount per head per period (default ₱500, twice a month on the 15th and end of month) |
+| Contribution | Each member picks a fixed amount per payday (minimum ₱300 per head; paydays are the 15th and end of month) |
 | Loan terms | 1 month @ 5%/mo, 2 months @ 4%/mo, 3 months @ 3%/mo |
 | Loan interest | Flat on principal: ₱10,000 × 4% × 2 mo = ₱800 interest, ₱10,800 total, paid in 2 equal monthly installments |
 | Year-end retention | 10% of the total fund balance carries over to next year |
@@ -60,8 +60,8 @@ Last year's carry-over is shared per head along with the interest, so the fund n
 
 ## Typical workflow
 
-1. **Settings:** set the fund name, contribution per head, schedule, and starting month.
-2. **Members:** add each member with their number of heads. Set "Joined" if they started mid-year.
+1. **Settings:** set the fund name, minimum per head per payday, schedule, and starting month.
+2. **Members:** add each member with their number of heads and their chosen amount per payday. Set "Joined" if they started mid-year.
 3. Each payday, go to **Contributions → Record dues for many**. Uncheck anyone who didn't pay.
 4. **Loans → New loan** to release a loan (the schedule preview shows due dates). Click **Pay** when installments come in.
 5. **Ledger:** record bank fees or other income, or export a CSV.
