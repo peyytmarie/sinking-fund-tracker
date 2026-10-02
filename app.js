@@ -363,32 +363,41 @@ function renderAuthBox() {
 }
 
 // ---------- render ----------
+let growthChart = null; // data for the hover layer of the fund-growth chart
+
 function render() {
   const s = S();
+  const gated = cloud.enabled && (!cloud.ready || cloud.needSignIn || cloud.denied);
   document.body.classList.toggle('readonly', !canEdit());
+  document.body.classList.toggle('gated', gated);
   document.getElementById('fund-name').textContent = s.fundName;
   const updated = state.updatedAt ? ` · updated ${new Date(state.updatedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}` : '';
-  document.getElementById('fund-year').textContent = `Fund year ${s.year} · ${state.members.length} members · ${sum(state.members, m => m.heads)} heads${updated}`;
+  document.getElementById('fund-year').textContent = gated ? 'Private fund' : `Fund year ${s.year} · ${state.members.length} members · ${sum(state.members, m => m.heads)} heads${updated}`;
   document.title = `${s.fundName} · ${s.year}`;
-  document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === ui.tab));
+  // Settings is for the admin only.
+  const tab = ui.tab === 'settings' && !canEdit() ? 'dashboard' : ui.tab;
+  document.querySelector('#tabs a[data-tab="settings"]').hidden = !canEdit();
+  document.querySelectorAll('#tabs a').forEach(a => a.classList.toggle('active', a.dataset.tab === tab));
   renderAuthBox();
   if (cloud.enabled && !cloud.ready) {
-    view.innerHTML = '<div class="card empty">Loading fund data…</div>';
+    view.innerHTML = emptyState('Loading fund data…', '', '⏳');
     return;
   }
   if (cloud.enabled && cloud.needSignIn) {
-    view.innerHTML = emptyState('This fund is private. Sign in with the Google account the fund admin added to see the numbers.',
-      '<button class="primary" data-auth="in">Sign in with Google</button>');
+    view.innerHTML = emptyState('<strong>This fund is private.</strong><br>Sign in with the Google account the fund admin added to see the numbers.',
+      '<button class="primary" data-auth="in">Sign in with Google</button>', '🔒');
     return;
   }
   if (cloud.enabled && cloud.denied) {
-    view.innerHTML = emptyState(`You're signed in as <strong>${esc(cloud.user?.email)}</strong>, but this account doesn't have access yet. Ask the fund admin to add this Gmail address, then reload the page.`,
-      '<button data-auth="out">Sign out</button>');
+    view.innerHTML = emptyState(`You're signed in as <strong>${esc(cloud.user?.email)}</strong>, but this account doesn't have access yet.<br>Ask the fund admin to add this Gmail address, then reload the page.`,
+      '<button data-auth="out">Sign out</button>', '🙈');
     return;
   }
+  growthChart = null;
   view.innerHTML = (cloud.error ? `<div class="notice bad" style="margin-bottom:16px">Could not reach the online database (${esc(cloud.error)}). Showing the last data this browser saw.</div>` : '')
-    + (views[ui.tab] || views.dashboard)();
+    + (views[tab] || views.dashboard)();
   applyReadOnly(view);
+  wireGrowthChart();
 }
 
 function kpi(label, value, hint = '', cls = '') {
@@ -399,84 +408,216 @@ function statusBadge(status) {
   return { paid: '<span class="badge good">Paid</span>', overdue: '<span class="badge bad">Overdue</span>', active: '<span class="badge accent">Active</span>' }[status];
 }
 
-function emptyState(msg, action = '') {
-  return `<div class="card empty"><p>${msg}</p>${action ? `<p style="margin-top:12px">${action}</p>` : ''}</div>`;
+function emptyState(msg, action = '', emoji = '') {
+  return `<div class="card empty">${emoji ? `<span class="emoji" aria-hidden="true">${emoji}</span>` : ''}<p>${msg}</p>${action ? `<p style="margin-top:14px">${action}</p>` : ''}</div>`;
 }
+
+const compactPeso = n => {
+  const a = Math.abs(n);
+  if (a >= 1e6) return `₱${+(n / 1e6).toFixed(1)}M`;
+  if (a >= 1e3) return `₱${+(n / 1e3).toFixed(a >= 1e4 ? 0 : 1)}k`;
+  return `₱${Math.round(n)}`;
+};
+const initials = name => name.trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+
+/** Fund value (contributions + interest + carry-over + other) step-by-step through the active year. */
+function growthSeries() {
+  const infoById = new Map(state.loans.map(l => [l.id, loanInfo(l)]));
+  const deltas = new Map();
+  const add = (d, v) => deltas.set(d, (deltas.get(d) || 0) + v);
+  state.contributions.filter(inYear).forEach(c => add(c.date, c.amount));
+  state.payments.filter(inYear).forEach(p => { const li = infoById.get(p.loanId); if (li) add(p.date, p.amount * li.interestShare); });
+  state.others.filter(inYear).forEach(o => add(o.date, o.type === 'in' ? o.amount : -o.amount));
+  const start = `${Y()}-01-01`;
+  let v = openingCarryOver();
+  const pts = [{ date: start, value: v }];
+  [...deltas.keys()].sort().forEach(d => { v = round2(v + deltas.get(d)); pts.push({ date: d, value: v }); });
+  const end = todayISO() < `${Y()}-12-31` ? todayISO() : `${Y()}-12-31`;
+  if (end > pts[pts.length - 1].date) pts.push({ date: end, value: v });
+  return pts;
+}
+
+function growthChartSVG() {
+  const pts = growthSeries();
+  const W = 640, H = 230, L = 52, R = 78, T = 14, B = 28;
+  const t0 = parseISO(`${Y()}-01-01`).getTime(), t1 = parseISO(`${Y()}-12-31`).getTime();
+  const x = d => L + (parseISO(d).getTime() - t0) / (t1 - t0) * (W - L - R);
+  const maxV = Math.max(...pts.map(p => p.value), 1);
+  const raw = maxV / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map(k => k * mag).find(s => s >= raw);
+  const top = step * 4;
+  const y = v => T + (1 - Math.max(v, 0) / top) * (H - T - B);
+  // Step line: the value holds until the next event.
+  let d = `M${x(pts[0].date)},${y(pts[0].value)}`;
+  for (let i = 1; i < pts.length; i++) d += `H${x(pts[i].date)}V${y(pts[i].value)}`;
+  const last = pts[pts.length - 1];
+  const area = `${d}V${y(0)}H${x(pts[0].date)}Z`;
+  const grid = [0, 1, 2, 3, 4].map(i => {
+    const gy = y(step * i);
+    return `<line class="gridline" x1="${L}" x2="${W - R}" y1="${gy}" y2="${gy}"/><text class="axis-label" x="${L - 8}" y="${gy + 4}" text-anchor="end">${compactPeso(step * i)}</text>`;
+  }).join('');
+  const months = MONTHS.map((m, i) => i % 2 === 0
+    ? `<text class="axis-label" x="${x(`${Y()}-${pad(i + 1)}-01`)}" y="${H - 8}" text-anchor="start">${m}</text>` : '').join('');
+  growthChart = { pts, W, H, x, y, L, R, t0, t1 };
+  return `
+    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Fund value over ${Y()}, now ${fmt(last.value)}">
+      ${grid}${months}
+      <path class="area" d="${area}"/>
+      <path class="line" d="${d}"/>
+      <circle class="end-dot" cx="${x(last.date)}" cy="${y(last.value)}" r="5"/>
+      <text class="end-label" x="${x(last.date) + 10}" y="${y(last.value) + 4}">${compactPeso(last.value)}</text>
+      <line class="crosshair" id="g-cross" y1="${T}" y2="${H - B}" visibility="hidden"/>
+      <circle class="hover-dot" id="g-dot" r="5" visibility="hidden"/>
+      <rect id="g-hit" x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent"/>
+    </svg>
+    <div class="chart-tip" id="g-tip" hidden></div>`;
+}
+
+function wireGrowthChart() {
+  const hit = document.getElementById('g-hit');
+  if (!hit || !growthChart) return;
+  const { pts, W, H, x, y, L, R, t0, t1 } = growthChart;
+  const svg = hit.ownerSVGElement, cross = document.getElementById('g-cross'), dot = document.getElementById('g-dot'), tip = document.getElementById('g-tip');
+  const hide = () => { cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); tip.hidden = true; };
+  svg.addEventListener('pointerleave', hide);
+  svg.addEventListener('pointermove', e => {
+    const r = svg.getBoundingClientRect();
+    const vx = (e.clientX - r.left) * W / r.width;
+    const t = t0 + (vx - L) / (W - L - R) * (t1 - t0);
+    const date = toISO(new Date(t));
+    if (vx < L || date > pts[pts.length - 1].date) return hide();
+    const p = [...pts].reverse().find(q => q.date <= date) || pts[0];
+    const cx = x(date), cy = y(p.value);
+    cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+    dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.setAttribute('visibility', 'visible');
+    tip.innerHTML = `<b>${fmt(p.value)}</b>${fmtDate(date)}`;
+    tip.style.left = `${cx / W * r.width}px`;
+    tip.style.top = `${cy / H * r.height}px`;
+    tip.hidden = false;
+  });
+}
+
+const ACTIVITY_ICON = { 'Contribution': '🪙', 'Loan released': '💸', 'Loan payment': '↩️', 'Other income': '➕', 'Expense': '🧾' };
 
 const views = {
   dashboard() {
     const c = compute();
     if (!state.members.length) {
-      if (!canEdit()) return emptyState('No fund data has been added yet.');
-      return emptyState('Welcome! Start by checking <a href="#settings">Settings</a> (contribution per head, schedule, rates), then add your members.',
-        '<button class="primary" data-action="add-member">Add first member</button>');
+      if (!canEdit()) return emptyState('No fund data has been added yet.', '', '🫙');
+      return emptyState('<strong>Your fund jar is empty!</strong><br>Check <a href="#settings">Settings</a> (minimum per head, schedule, loan rates), then add your members.',
+        '<button class="primary" data-action="add-member">Add first member</button>', '🫙');
     }
     const overdue = c.openLoans.filter(li => li.status === 'overdue');
     const behind = c.rows.filter(r => r.arrears > EPS);
-    const recent = ledgerRows().slice(-8).reverse();
+    const recent = ledgerRows().slice(-7).reverse();
+    const year = Number(Y());
+    const today = parseISO(c.today);
+    const daysLeft = Math.ceil((new Date(year, 11, 1) - today) / 86400000);
+    const yearPct = Math.min(100, Math.max(0, (today - new Date(year, 0, 1)) / (new Date(year + 1, 0, 1) - new Date(year, 0, 1)) * 100));
+    const cashPos = Math.max(0, c.cash);
+    const pool = cashPos + c.principalOutstanding;
+    const pctCash = pool ? cashPos / pool * 100 : 0;
+    const countdown = c.today.slice(0, 4) !== Y()
+      ? (c.today.slice(0, 4) > Y() ? `<div class="days">🎉</div><p>Fund year ${Y()} has ended.</p>` : `<div class="days">${Y()}</div><p>This fund year hasn't started yet.</p>`)
+      : daysLeft > 0
+        ? `<div class="days">${daysLeft}<small>day${daysLeft === 1 ? '' : 's'}</small></div><p>until the December share-out 🎁</p>`
+        : `<div class="days">🎉</div><p>It's share-out month! See <a href="#yearend" style="color:#ffe3a6">Year-End</a>.</p>`;
 
     return `
-      <section class="section kpis">
-        ${kpi('Total fund value', fmt(c.fundValue), 'Cash on hand + unpaid loan principal', 'primary')}
-        ${kpi('Cash on hand', fmt(c.cash), 'Available for new loans')}
-        ${kpi('Loans receivable', fmt(c.principalOutstanding), `${c.openLoans.length} open loan${c.openLoans.length === 1 ? '' : 's'} · +${fmt(c.interestReceivable)} interest to collect`)}
-        ${kpi(`Contributions ${Y()}`, fmt(c.totalContrib), `${fmt(sum(state.members, duesOf))} due per ${perPayday()} · paid ${S().frequency === 'monthly' ? 'monthly' : 'twice a month'}`)}
-        ${kpi('Interest earned', fmt(c.interestCollected), `Collected so far · ${fmt(c.interestTotal)} expected incl. open loans`)}
-        ${kpi('Earnings per head (proj.)', fmt(c.earningsPerHead), `${c.totalHeads} heads · interest${c.opening ? ' + carry-over' : ''}${c.otherNet ? ' + other' : ''}`)}
-        ${kpi(`Carry-over to ${Number(Y()) + 1} (proj.)`, fmt(c.retained), `${S().retentionPct}% of ${fmt(c.totalBalance)}`)}
+      <section class="section hero">
+        <div>
+          <div class="eyebrow">Total fund value · ${Y()}</div>
+          <div class="figure">${fmt(c.fundValue)}</div>
+          <p class="tagline">The jar has earned <strong>${fmt(c.interestCollected)}</strong> in loan interest so far this year${c.interestReceivable > EPS ? `, with ${fmt(c.interestReceivable)} more on the way` : ''}.</p>
+          <div class="hero-stats">
+            <div><span>Cash on hand</span><b>${fmt(c.cash)}</b></div>
+            <div><span>Out on loans</span><b>${fmt(c.principalOutstanding)}</b></div>
+            <div><span>Members</span><b>${state.members.length} · ${c.totalHeads} heads</b></div>
+          </div>
+        </div>
+        <div class="countdown">
+          ${countdown}
+          <div class="year-track"><i style="width:${yearPct.toFixed(1)}%"></i></div>
+          <div class="track-label"><span>Jan</span><span>${Math.round(yearPct)}% of the year</span><span>Dec</span></div>
+        </div>
       </section>
 
-      ${overdue.length || behind.length ? `
+      <section class="section stat-strip">
+        <div class="card stat"><div class="ico">🪙</div><div><div class="label">Contributions ${Y()}</div><div class="value">${fmt(c.totalContrib)}</div><div class="hint">${fmt(sum(state.members, duesOf))} due every ${perPayday()}</div></div></div>
+        <div class="card stat"><div class="ico gold">📈</div><div><div class="label">Interest earned</div><div class="value">${fmt(c.interestCollected)}</div><div class="hint">${fmt(c.interestTotal)} incl. open loans</div></div></div>
+        <div class="card stat"><div class="ico">🤝</div><div><div class="label">Earnings per head (proj.)</div><div class="value">${fmt(c.earningsPerHead)}</div><div class="hint">shared equally by ${c.totalHeads} heads</div></div></div>
+        <div class="card stat"><div class="ico gold">🌱</div><div><div class="label">Carry-over to ${year + 1}</div><div class="value">${fmt(c.retained)}</div><div class="hint">${S().retentionPct}% kept for next year</div></div></div>
+      </section>
+
+      <section class="section alerts">
+        ${overdue.map(li => `<span class="alert-chip bad">⏰ ${esc(memberName(li.loan.memberId))}'s loan payment is overdue · ${fmt(li.dueNow)}</span>`).join('')}
+        ${behind.map(r => `<span class="alert-chip warn">⚠️ ${esc(r.member.name)} is behind by ${fmt(r.arrears)}</span>`).join('')}
+        ${!overdue.length && !behind.length ? '<span class="alert-chip good">✅ Everyone is up to date — nice!</span>' : ''}
+      </section>
+
       <section class="section grid-2">
-        ${overdue.length ? `<div class="notice bad"><strong>Overdue loans:</strong> ${overdue.map(li => `${esc(memberName(li.loan.memberId))} (${fmt(li.dueNow)} due)`).join(', ')}</div>` : '<div></div>'}
-        ${behind.length ? `<div class="notice warn"><strong>Behind on contributions:</strong> ${behind.map(r => `${esc(r.member.name)} (${fmt(r.arrears)})`).join(', ')}</div>` : ''}
-      </section>` : ''}
+        <div class="card chart-card">
+          <h3>Fund growth</h3>
+          <p class="sub">Contributions + interest added to the jar in ${Y()}</p>
+          <div class="chart-wrap">${growthChartSVG()}</div>
+        </div>
+        <div class="card chart-card">
+          <h3>Where the money is</h3>
+          <p class="sub">Every peso is either in the jar or lent to a member</p>
+          <div class="split-bar" role="img" aria-label="Cash on hand ${Math.round(pctCash)}%, out on loans ${Math.round(100 - pctCash)}%">
+            ${cashPos > EPS ? `<i class="s1" style="flex:${cashPos}" title="Cash on hand: ${fmt(cashPos)}"></i>` : ''}
+            ${c.principalOutstanding > EPS ? `<i class="s2" style="flex:${c.principalOutstanding}" title="Out on loans: ${fmt(c.principalOutstanding)}"></i>` : ''}
+          </div>
+          <div class="legend">
+            <div class="legend-row"><span class="sw s1"></span><span>Cash on hand <span class="muted small">· ${Math.round(pctCash)}%</span></span><b>${fmt(c.cash)}</b></div>
+            <div class="legend-row"><span class="sw s2"></span><span>Out on loans <span class="muted small">· ${c.openLoans.length} loan${c.openLoans.length === 1 ? '' : 's'} · ${Math.round(100 - pctCash)}%</span></span><b>${fmt(c.principalOutstanding)}</b></div>
+          </div>
+          <div class="callout"><span style="font-size:22px">💰</span><div><div class="big">${fmt(c.earningsPerHead)} per head</div><div class="small muted">projected earnings from interest${c.opening ? ' and carry-over' : ''}, before the ${S().retentionPct}% carry-over</div></div></div>
+        </div>
+      </section>
 
       <section class="section">
         <div class="section-head"><h2>Members</h2>
           <div class="actions">
+            <button data-action="bulk-contribution">Record dues for many</button>
             <button data-action="add-contribution">+ Contribution</button>
             <button data-action="add-loan">+ Loan</button>
-            <button data-action="add-member">+ Member</button>
+            <button class="primary" data-action="add-member">+ Member</button>
           </div>
         </div>
-        <div class="card table-wrap">
-          <table>
-            <thead><tr>
-              <th>Member</th><th class="num">Heads</th><th class="num">Contributed</th><th class="num">Expected to date</th>
-              <th class="num">Arrears</th><th class="num">Loan balance</th><th class="num">Net contribution</th><th class="num">Projected Dec payout</th>
-            </tr></thead>
-            <tbody>
-              ${c.rows.map(r => `<tr>
-                <td><a href="#" data-action="statement" data-id="${r.member.id}">${esc(r.member.name)}</a></td>
-                <td class="num">${r.heads}</td>
-                <td class="num">${fmt(r.contrib)}</td>
-                <td class="num muted">${fmt(r.expected)}</td>
-                <td class="num ${r.arrears > EPS ? 'warn' : 'muted'}">${r.arrears > EPS ? fmt(r.arrears) : '—'}</td>
-                <td class="num ${r.overdue ? 'bad' : ''}">${r.loanBalance > EPS ? fmt(r.loanBalance) : '<span class="muted">—</span>'}</td>
-                <td class="num">${fmt(r.netContribution)}</td>
-                <td class="num"><strong>${fmt(r.payout)}</strong></td>
-              </tr>`).join('')}
-            </tbody>
-            <tfoot><tr>
-              <td>Total</td><td class="num">${c.totalHeads}</td><td class="num">${fmt(c.totalContrib)}</td>
-              <td class="num">${fmt(sum(c.rows, r => r.expected))}</td><td class="num">${fmt(sum(c.rows, r => r.arrears))}</td>
-              <td class="num">${fmt(sum(c.rows, r => r.loanBalance))}</td><td class="num">${fmt(sum(c.rows, r => r.netContribution))}</td>
-              <td class="num">${fmt(sum(c.rows, r => r.payout))}</td>
-            </tr></tfoot>
-          </table>
+        <div class="member-grid">
+          ${c.rows.map(r => {
+            const pct = r.expectedFull > EPS ? Math.min(100, r.contrib / r.expectedFull * 100) : 0;
+            const status = r.arrears > EPS ? `<span class="badge warn">Behind ${fmt(r.arrears)}</span>` : '<span class="badge good">On track</span>';
+            return `<button type="button" class="card member-card" data-action="statement" data-id="${r.member.id}">
+              <div class="member-top">
+                <span class="avatar" aria-hidden="true">${esc(initials(r.member.name))}</span>
+                <div><div class="name">${esc(r.member.name)}</div>
+                  <div class="chips"><span class="chip">${r.heads} head${r.heads === 1 ? '' : 's'}</span><span class="chip">${fmt(duesOf(r.member))}/${perPayday()}</span>
+                  ${r.loanBalance > EPS ? `<span class="chip" style="color:var(--${r.overdue ? 'bad' : 'warn'})">Loan ${fmt(r.loanBalance)}</span>` : ''}</div></div>
+              </div>
+              <div class="meter"><i style="width:${pct.toFixed(1)}%"></i></div>
+              <div class="meter-label"><span>${fmt(r.contrib)} saved</span><span>${Math.round(pct)}% of ${fmt(r.expectedFull)}</span></div>
+              <div class="member-foot">
+                <div><div class="label">Projected Dec share</div><div class="payout">${fmt(r.payout)}</div></div>
+                ${status}
+              </div>
+            </button>`;
+          }).join('')}
         </div>
-        <p class="small muted" style="margin-top:6px">Net contribution = contributed − unpaid loan balance. Projected payout uses contributions so far; see <a href="#yearend">Year-End</a> for the full breakdown.</p>
+        <p class="small muted" style="margin-top:8px">Tap a member to see their full statement. Shares include contributions + interest per head, minus the ${S().retentionPct}% carry-over and any unpaid loan.</p>
       </section>
 
       <section class="section">
         <div class="section-head"><h2>Recent activity</h2><a href="#ledger">View full ledger →</a></div>
-        ${recent.length ? `<div class="card table-wrap"><table>
-          <thead><tr><th>Date</th><th>Type</th><th>Member</th><th class="num">In</th><th class="num">Out</th><th class="num">Cash balance</th></tr></thead>
-          <tbody>${recent.map(r => `<tr>
-            <td>${fmtDate(r.date)}</td><td>${r.kind}</td><td>${esc(r.who)}</td>
-            <td class="num good">${r.inAmt ? fmt(r.inAmt) : ''}</td><td class="num bad">${r.outAmt ? fmt(r.outAmt) : ''}</td>
-            <td class="num">${fmt(r.balance)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('No transactions yet this year.')}
+        ${recent.length ? `<div class="card timeline">${recent.map(r => {
+          const dir = r.inAmt ? 'in' : 'out';
+          return `<div class="tl-row">
+            <span class="tl-ico ${dir}" aria-hidden="true">${ACTIVITY_ICON[r.kind] || '•'}</span>
+            <div><div class="tl-title">${esc(r.who || r.desc || r.kind)}</div><div class="small muted">${r.kind} · ${fmtDate(r.date)}</div></div>
+            <div class="tl-amt ${dir}">${dir === 'in' ? '+' : '−'}${fmt(r.inAmt || r.outAmt)}</div>
+          </div>`;
+        }).join('')}</div>` : emptyState('No transactions yet this year.', '', '🗒️')}
       </section>`;
   },
 
