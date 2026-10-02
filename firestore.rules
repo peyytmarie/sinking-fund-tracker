@@ -1,0 +1,14 @@
+rules_version = '2';
+
+// Paste into Firebase console → Firestore Database → Rules, then Publish.
+// Anyone with the link can read the fund; only the listed Google accounts can change it.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /funds/{fundId} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in ['your.email@gmail.com'];
+    }
+  }
+}

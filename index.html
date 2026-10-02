@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sinking Fund Tracker</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">₱</span>
+      <div>
+        <h1 id="fund-name">Sinking Fund</h1>
+        <p class="sub" id="fund-year"></p>
+      </div>
+      <div class="auth-box" id="auth-box"></div>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#dashboard" data-tab="dashboard">Dashboard</a>
+      <a href="#members" data-tab="members">Members</a>
+      <a href="#contributions" data-tab="contributions">Contributions</a>
+      <a href="#loans" data-tab="loans">Loans</a>
+      <a href="#ledger" data-tab="ledger">Ledger</a>
+      <a href="#yearend" data-tab="yearend">Year-End</a>
+      <a href="#settings" data-tab="settings">Settings</a>
+    </nav>
+  </header>
+
+  <main id="view" class="container"></main>
+
+  <dialog id="modal">
+    <form id="modal-form" novalidate>
+      <header class="modal-head">
+        <h2 id="modal-title"></h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">&times;</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer id="modal-footer" class="modal-foot"></footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+  <script type="module" src="cloud.js"></script>
+</body>
+</html>

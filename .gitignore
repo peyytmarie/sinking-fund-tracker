@@ -1,0 +1,6 @@
+# Backups contain real fund data; never commit them
+*.json
+*.csv
+node_modules/
+.DS_Store
+Thumbs.db
