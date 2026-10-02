@@ -6,7 +6,7 @@ A simple offline web app for tracking a group sinking fund: member contributions
 
 **Online (shared with members):** the app is hosted on GitHub Pages and the data is stored in Firebase Firestore.
 - Anyone with the link can **view** the fund.
-- Only the admin Google accounts listed in `firebase-config.js` and `firestore.rules` can **edit**. Sign in with the **Admin sign in** button.
+- Only admin Google accounts can **edit**: they're listed as hashes in `firebase-config.js`, and enforced by the Firestore rules in the Firebase console. Sign in with the **Admin sign in** button.
 
 **Local only:** if `firebase-config.js` still has the `PASTE_...` placeholders, or you double-click `index.html` on your computer, the app runs offline.
 - Data is saved in that browser only.
@@ -22,7 +22,7 @@ In both modes, use **Settings → Export backup** regularly and keep the `.json`
    - **Authentication → Settings → Authorized domains:** add `<your-github-username>.github.io`.
    - **Project settings → General → Your apps → Web (`</>`).** Register the app and copy the config values into `firebase-config.js`.
    - **Firestore → Rules:** paste `firestore.rules` with your admin email filled in, then **Publish**.
-   - Put the same admin email in `adminEmails` in `firebase-config.js`.
+   - Add the SHA-256 hash of the admin email (lowercase) to `adminEmailHashes` in `firebase-config.js`. Run `printf '%s' 'name@gmail.com' | sha256sum`. Don't commit the plain email to this public repo.
 2. **GitHub Pages:** push this folder to a GitHub repo, then go to **Settings → Pages → Deploy from branch → `main` / root**.
    - The site will be at `https://<your-github-username>.github.io/sinking-fund-tracker/`.
 3. **Move your existing data:**

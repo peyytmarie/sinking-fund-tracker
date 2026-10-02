@@ -1,6 +1,11 @@
 // Online mode: loads/saves the fund data in Firebase Firestore so everyone with the link sees the same numbers.
-// Anyone can view; only Google accounts listed in adminEmails (and in firestore.rules) can edit.
-import { firebaseConfig, adminEmails, fundDocPath } from './firebase-config.js';
+// Anyone can view; only the admin Google accounts (hashed in firebase-config.js, enforced by Firestore rules) can edit.
+import { firebaseConfig, adminEmailHashes, fundDocPath } from './firebase-config.js';
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 const SDK = 'https://www.gstatic.com/firebasejs/12.19.0';
 const app = window.sfApp;
@@ -18,7 +23,6 @@ if (configured) {
     const db = fs.getFirestore(fb);
     const auth = au.getAuth(fb);
     const ref = fs.doc(db, fundDocPath);
-    const admins = adminEmails.map(e => e.toLowerCase());
     let isAdmin = false;
 
     window.cloudSave = state => fs.setDoc(ref, {
@@ -29,8 +33,8 @@ if (configured) {
     window.cloudSignIn = () => au.signInWithPopup(auth, new au.GoogleAuthProvider());
     window.cloudSignOut = () => au.signOut(auth);
 
-    au.onAuthStateChanged(auth, user => {
-      isAdmin = !!user && admins.includes((user.email || '').toLowerCase());
+    au.onAuthStateChanged(auth, async user => {
+      isAdmin = !!user?.email && adminEmailHashes.includes(await sha256(user.email.toLowerCase()));
       app.setCloud({ user: user ? { email: user.email } : null, canEdit: isAdmin });
     });
 
