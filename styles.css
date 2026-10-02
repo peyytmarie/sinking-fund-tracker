@@ -196,7 +196,7 @@ body.gated .tabs { display: none; }
 .hero .figure { font-size: clamp(38px, 6vw, 54px); font-weight: 800; letter-spacing: -.03em; line-height: 1.05; margin: 6px 0 8px; }
 .hero .tagline { opacity: .88; }
 .hero .tagline strong { color: #ffe3a6; }
-.hero-stats { display: grid; grid-template-columns: repeat(3, auto); gap: 18px; margin-top: 20px; justify-content: start; }
+.hero-stats { display: grid; grid-template-columns: repeat(4, auto); gap: 18px; margin-top: 20px; justify-content: start; }
 .hero-stats div { padding-right: 18px; border-right: 1px solid rgba(255, 255, 255, .2); }
 .hero-stats div:last-child { border-right: 0; }
 .hero-stats span { display: block; font-size: 12px; opacity: .75; }
@@ -216,7 +216,7 @@ body.gated .tabs { display: none; }
 @media (max-width: 760px) {
   .hero { grid-template-columns: 1fr; padding: 22px; }
   .hero-stats { grid-template-columns: 1fr 1fr; }
-  .hero-stats div:nth-child(2) { border-right: 0; }
+  .hero-stats div:nth-child(2n) { border-right: 0; }
 }
 
 /* ---------- stat strip ---------- */
@@ -271,6 +271,11 @@ body.gated .tabs { display: none; }
   background: var(--gold-soft); display: flex; gap: 10px; align-items: center;
 }
 .callout .big { font-size: 18px; font-weight: 800; }
+
+/* ---------- loan calculator ---------- */
+.calc-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 1.6fr; gap: 24px; margin-top: 14px; align-items: start; }
+.calc-box { background: var(--accent-soft); border-radius: 14px; padding: 16px 18px; }
+@media (max-width: 760px) { .calc-grid { grid-template-columns: 1fr; } }
 
 /* ---------- alerts ---------- */
 .alerts { display: flex; flex-wrap: wrap; gap: 10px; }

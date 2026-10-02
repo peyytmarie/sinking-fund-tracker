@@ -45,6 +45,7 @@ function defaultState() {
       startMonth: 1,
       rates: { 1: 5, 2: 4, 3: 3 }, // % per month, by term in months
       retentionPct: 10,
+      reservePct: 20, // share of cash on hand that is never lent out
       openingByYear: {}, // { "2026": 1234.5 } carry-over brought into that year
     },
     members: [],       // { id, name, heads, joined, notes, ts }
@@ -113,6 +114,12 @@ const activeMembers = () => state.members.filter(isActive);
 const upcomingMembers = () => state.members.filter(m => !isActive(m));
 const openingCarryOver = () => Number(S().openingByYear[Y()] || 0);
 const rateFor = term => Number(S().rates[term] || 0);
+const reservePct = () => Number(S().reservePct ?? 20);
+/** Cash that can be lent right now: cash on hand minus the reserve (never below zero). */
+const loanableOf = c => {
+  const reserve = round2(Math.max(0, c.cash) * reservePct() / 100);
+  return { cash: c.cash, reserve, amount: round2(Math.max(0, c.cash - reserve)) };
+};
 const minDues = m => round2((Number(m.heads) || 0) * S().perHead);
 /** What a member pays each payday: their chosen amount, never below the minimum for their heads. */
 const duesOf = m => Math.max(round2(Number(m.amount) || 0), minDues(m));
@@ -438,6 +445,7 @@ function render() {
     + (views[tab] || views.dashboard)();
   applyReadOnly(view);
   wireGrowthChart();
+  updateCalc();
 }
 
 function kpi(label, value, hint = '', cls = '') {
@@ -537,6 +545,27 @@ function wireGrowthChart() {
   });
 }
 
+function updateCalc() {
+  const box = document.getElementById('calc-result');
+  if (!box) return;
+  const amtEl = document.getElementById('calc-amount');
+  const amount = parseAmount(amtEl.value) || 0;
+  const term = Number(document.getElementById('calc-term').value);
+  const loanable = Number(amtEl.dataset.loanable);
+  if (!(amount > 0)) { box.innerHTML = '<p class="small muted">Enter an amount to see the interest and schedule.</p>'; return; }
+  const li = loanInfo({ id: '__calc__', principal: amount, term, rate: rateFor(term), date: todayISO() });
+  const fits = amount <= loanable + EPS;
+  box.innerHTML = `
+    <div class="preview">
+      <span>Interest (${rateFor(term)}% × ${term} mo)</span><span class="num">${fmt(li.interest)}</span>
+      <span class="total">Total to repay</span><span class="num total">${fmt(li.totalDue)}</span>
+      ${li.schedule.map(x => `<span class="muted">Installment ${x.no} · due ${fmtDate(x.date)}</span><span class="num muted">${fmt(x.amount)}</span>`).join('')}
+    </div>
+    <p style="margin-top:10px">${fits
+      ? `<span class="alert-chip good">✅ Within the loanable amount · ${fmt(round2(loanable - amount))} left after this</span>`
+      : `<span class="alert-chip bad">⛔ ${fmt(round2(amount - loanable))} over the loanable amount</span>`}</p>`;
+}
+
 const ACTIVITY_ICON = { 'Contribution': '🪙', 'Loan released': '💸', 'Loan payment': '↩️', 'Other income': '➕', 'Expense': '🧾' };
 
 const views = {
@@ -572,6 +601,7 @@ const views = {
           <div class="hero-stats">
             <div><span>Cash on hand</span><b>${fmt(c.cash)}</b></div>
             <div><span>Out on loans</span><b>${fmt(c.principalOutstanding)}</b></div>
+            <div><span>Loanable now</span><b>${fmt(loanableOf(c).amount)}</b></div>
             <div><span>Members</span><b>${c.rows.length} · ${c.totalHeads} heads</b></div>
           </div>
         </div>
@@ -755,12 +785,35 @@ const views = {
     const list = c.loanInfos
       .filter(li => ui.showPaidLoans ? (inYear(li.loan) || li.balance > EPS) : li.balance > EPS)
       .sort((a, b) => byDate(a.loan, b.loan)).reverse();
+    const lo = loanableOf(c);
     return `
       <section class="section kpis">
-        ${kpi('Cash available to lend', fmt(c.cash))}
+        ${kpi('Loanable now', fmt(lo.amount), `Cash ${fmt(lo.cash)} − ${reservePct()}% reserve ${fmt(lo.reserve)}`, 'primary')}
         ${kpi('Loans receivable', fmt(c.principalOutstanding), `${c.openLoans.length} open`)}
         ${kpi('Interest collected', fmt(c.interestCollected), `${fmt(c.interestReceivable)} still to collect`)}
         ${kpi('Interest rates', `${r[1]}% · ${r[2]}% · ${r[3]}%`, '1 · 2 · 3 months, per month, flat on principal')}
+      </section>
+      <section class="section card pad" id="calc">
+        <h3>Loan calculator</h3>
+        <p class="sub">See how much can be lent and what a loan will cost. Nothing is saved.</p>
+        <div class="calc-grid">
+          <div class="summary-list calc-box">
+            <span>Cash on hand</span><span class="num">${fmt(lo.cash)}</span>
+            <span>Less ${reservePct()}% reserve (kept in the jar)</span><span class="num">− ${fmt(lo.reserve)}</span>
+            <div class="sep"></div>
+            <span class="big">Loanable now</span><span class="num big">${fmt(lo.amount)}</span>
+          </div>
+          <div>
+            <div class="fields">
+              <div class="field"><label for="calc-amount">Amount to borrow (₱)</label>
+                <input id="calc-amount" type="number" min="0" step="0.01" placeholder="e.g. 3000" data-loanable="${lo.amount}">
+                <div class="help"><a href="#" data-action="calc-max">Use the maximum (${fmt(lo.amount)})</a></div></div>
+              <div class="field"><label for="calc-term">Term</label>
+                <select id="calc-term">${[1, 2, 3].map(t => `<option value="${t}">${t} month${t > 1 ? 's' : ''} · ${rateFor(t)}% per month</option>`).join('')}</select></div>
+            </div>
+            <div id="calc-result"></div>
+          </div>
+        </div>
       </section>
       <section class="section">
         <div class="section-head"><h2>Loans</h2>
@@ -939,6 +992,7 @@ const views = {
           </div>
           <h3 style="margin:8px 0 10px">Year-end</h3>
           <div class="fields">
+            <div class="field"><label for="reservePct">Cash reserve, not lendable (%)</label><input id="reservePct" name="reservePct" type="number" min="0" max="100" step="1" value="${reservePct()}"></div>
             <div class="field"><label for="retentionPct">Retained carry-over (%)</label><input id="retentionPct" name="retentionPct" type="number" min="0" max="100" step="0.1" value="${s.retentionPct}"></div>
             <div class="field"><label for="opening">Carry-over brought into ${Y()} (₱)</label><input id="opening" name="opening" type="number" min="0" step="0.01" value="${openingCarryOver()}">
               <div class="help">Filled in automatically when you close the previous year.</div></div>
@@ -1083,7 +1137,7 @@ function loanForm(cash) {
     <div class="fields">
       <div class="field"><label for="f-date">Release date</label><input id="f-date" name="date" type="date" value="${defaultDateInYear()}" required></div>
       <div class="field"><label for="f-principal">Amount borrowed (₱)</label><input id="f-principal" name="principal" type="number" min="1" step="0.01" required>
-        <div class="help">Cash available: ${fmt(cash)}</div></div>
+        <div class="help">Loanable now: ${fmt(loanableOf({ cash }).amount)} (cash ${fmt(cash)} − ${reservePct()}% reserve)</div></div>
       <div class="field"><label for="f-term">Term</label>
         <select id="f-term" name="term">${[1, 2, 3].map(t => `<option value="${t}">${t} month${t > 1 ? 's' : ''} — ${rateFor(t)}% per month</option>`).join('')}</select></div>
     </div>
@@ -1261,7 +1315,8 @@ const actions = {
         if (!d.memberId) return fail('Please choose the borrower.');
         if (!d.date) return fail('Please enter the release date.');
         if (!(principal > 0)) return fail('Amount must be more than zero.');
-        if (principal > c.cash + EPS && !confirm(`This is more than the cash available (${fmt(c.cash)}). Release anyway?`)) return false;
+        const lo = loanableOf(c);
+        if (principal > lo.amount + EPS && !confirm(`This is more than the loanable amount (${fmt(lo.amount)}, keeping ${reservePct()}% of cash in reserve). Release anyway?`)) return false;
         state.loans.push({ id: uid(), ts: Date.now(), memberId: d.memberId, date: d.date, principal, term, rate: rateFor(term), note: d.note.trim() });
         commit(`Loan of ${fmt(principal)} released`);
       },
@@ -1328,6 +1383,11 @@ const actions = {
   'remove-viewer': ({ email }) => {
     if (!confirm(`Remove ${email}? They won't be able to open the fund anymore.`)) return;
     window.cloudSetViewers(cloud.viewers.filter(e => e !== email)).then(() => toast('Removed')).catch(err => alert('Could not save: ' + err.message));
+  },
+  'calc-max': () => {
+    const el = document.getElementById('calc-amount');
+    el.value = el.dataset.loanable;
+    updateCalc();
   },
   'toggle-paid': () => { ui.showPaidLoans = !ui.showPaidLoans; render(); },
   'toggle-remaining': () => { ui.includeRemainingDues = !ui.includeRemainingDues; render(); },
@@ -1461,6 +1521,7 @@ document.addEventListener('click', e => {
   const fn = btn.dataset.auth === 'in' ? window.cloudSignIn : window.cloudSignOut;
   fn?.().catch(err => { if (err?.code !== 'auth/popup-closed-by-user') alert('Sign-in failed: ' + err.message); });
 });
+view.addEventListener('input', e => { if (e.target.closest('#calc')) updateCalc(); });
 view.addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.action === 'contrib-filter') { ui.contribFilter = el.value; render(); }
@@ -1488,16 +1549,19 @@ view.addEventListener('submit', e => {
   const s = S();
   const perHead = parseAmount(f.perHead);
   const retention = parseFloat(f.retentionPct);
+  const reserve = parseFloat(f.reservePct);
   const rates = [1, 2, 3].map(t => parseFloat(f['rate' + t]));
   if (!f.fundName.trim()) return alert('Please enter a fund name.');
   if (!(perHead >= 0)) return alert('Minimum contribution must be a number.');
   if (!(retention >= 0 && retention <= 100)) return alert('Retention must be between 0 and 100%.');
+  if (!(reserve >= 0 && reserve <= 100)) return alert('Cash reserve must be between 0 and 100%.');
   if (rates.some(r => !(r >= 0))) return alert('Interest rates must be numbers.');
   s.fundName = f.fundName.trim();
   s.perHead = perHead;
   s.frequency = f.frequency;
   s.startMonth = Number(f.startMonth);
   s.retentionPct = retention;
+  s.reservePct = reserve;
   rates.forEach((r, i) => { s.rates[i + 1] = r; });
   const yearChanged = String(f.year) !== Y();
   // Opening carry-over belongs to the year shown in the form before any year switch.
