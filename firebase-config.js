@@ -18,3 +18,6 @@ export const adminEmailHashes = ['014317ea5aaa4dc8afa39c0fade4f6825075554e0eaa51
 
 // Firestore document that holds the fund data.
 export const fundDocPath = 'funds/main';
+
+// Firestore document listing the Gmail addresses allowed to view (managed in the app's Settings).
+export const viewersDocPath = 'access/viewers';

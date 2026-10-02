@@ -75,23 +75,26 @@ function load() {
 let state = load();
 
 // Online mode (see cloud.js). Without Firebase config the app stays local-only and fully editable.
-const cloud = { enabled: false, ready: true, canEdit: false, user: null, error: '' };
+// In online mode the fund is private: only signed-in admins and allowed viewers can load it.
+const cloud = { enabled: false, ready: true, canEdit: false, user: null, error: '', needSignIn: false, denied: false, viewers: [] };
 const canEdit = () => !cloud.enabled || cloud.canEdit;
 
 function save() {
   state.updatedAt = new Date().toISOString();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  if (cloud.enabled && cloud.canEdit && window.cloudSave) {
-    window.cloudSave(state).catch(err => alert('Could not save online: ' + err.message));
-  }
+  if (!cloud.enabled) return localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  // Online: nothing is cached in the browser, so no fund data is left behind after signing out.
+  if (cloud.canEdit && window.cloudSave) window.cloudSave(state).catch(err => alert('Could not save online: ' + err.message));
 }
 
 // Hooks used by cloud.js
 window.sfApp = {
-  setCloud(patch) { Object.assign(cloud, patch); render(); },
+  setCloud(patch) {
+    if (patch.enabled && !cloud.enabled) { localStorage.removeItem(STORAGE_KEY); state = defaultState(); }
+    Object.assign(cloud, patch);
+    render();
+  },
   applyRemote(data) {
     state = data ? normalize(data) : defaultState();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     render();
   },
 };
@@ -334,7 +337,7 @@ function parseAmount(v) { const n = round2(parseFloat(v)); return Number.isFinit
 const EDIT_ACTIONS = new Set([
   'add-member', 'edit-member', 'delete-member', 'add-contribution', 'edit-contribution', 'delete-contribution',
   'bulk-contribution', 'add-loan', 'pay-loan', 'add-other', 'delete-other', 'close-year', 'import-json', 'load-sample', 'reset',
-  'delete-payment', 'delete-loan', 'pay-from-details',
+  'delete-payment', 'delete-loan', 'pay-from-details', 'add-viewer', 'remove-viewer',
 ]);
 
 function applyReadOnly(root) {
@@ -356,7 +359,7 @@ function renderAuthBox() {
   box.innerHTML = cloud.user
     ? `${status} ${cloud.canEdit ? '<span class="badge accent">Admin</span>' : '<span class="badge">View only</span>'}
        <span class="small muted auth-email">${esc(cloud.user.email)}</span> <button class="sm" data-auth="out">Sign out</button>`
-    : `${status} <button class="sm" data-auth="in">Admin sign in</button>`;
+    : `${status} <button class="sm" data-auth="in">Sign in</button>`;
 }
 
 // ---------- render ----------
@@ -371,6 +374,16 @@ function render() {
   renderAuthBox();
   if (cloud.enabled && !cloud.ready) {
     view.innerHTML = '<div class="card empty">Loading fund data…</div>';
+    return;
+  }
+  if (cloud.enabled && cloud.needSignIn) {
+    view.innerHTML = emptyState('This fund is private. Sign in with the Google account the fund admin added to see the numbers.',
+      '<button class="primary" data-auth="in">Sign in with Google</button>');
+    return;
+  }
+  if (cloud.enabled && cloud.denied) {
+    view.innerHTML = emptyState(`You're signed in as <strong>${esc(cloud.user?.email)}</strong>, but this account doesn't have access yet. Ask the fund admin to add this Gmail address, then reload the page.`,
+      '<button data-auth="out">Sign out</button>');
     return;
   }
   view.innerHTML = (cloud.error ? `<div class="notice bad" style="margin-bottom:16px">Could not reach the online database (${esc(cloud.error)}). Showing the last data this browser saw.</div>` : '')
@@ -763,6 +776,7 @@ const views = {
               <input type="file" id="import-file" accept="application/json,.json" hidden>
             </div>
           </div>
+          ${cloud.enabled && cloud.canEdit ? viewersCard() : ''}
           <div class="card pad edit-only" style="margin-top:16px">
             <h2 style="margin-bottom:8px">Sample & reset</h2>
             <p class="muted" style="margin-bottom:12px">Load demo data to try things out, or wipe everything to start over. Both replace your current data, so export a backup first.</p>
@@ -775,6 +789,19 @@ const views = {
       </section>`;
   },
 };
+
+function viewersCard() {
+  const list = [...cloud.viewers].sort();
+  return `
+    <div class="card pad" style="margin-top:16px">
+      <h2 style="margin-bottom:8px">Who can view</h2>
+      <p class="muted" style="margin-bottom:12px">Only these Google accounts (plus you) can open the fund. They sign in with the <strong>Sign in</strong> button and see everything in view-only mode.</p>
+      ${list.length ? `<div class="table-wrap" style="margin-bottom:12px"><table><tbody>${list.map(e => `<tr><td>${esc(e)}</td>
+        <td><div class="row-actions"><button class="sm danger" data-action="remove-viewer" data-email="${esc(e)}">Remove</button></div></td></tr>`).join('')}</tbody></table></div>`
+        : '<p class="muted small" style="margin-bottom:12px">No one added yet.</p>'}
+      <div class="actions"><input id="viewer-email" type="email" placeholder="friend@gmail.com" style="flex:1;min-width:180px"><button data-action="add-viewer">Add</button></div>
+    </div>`;
+}
 
 // ---------- forms ----------
 function memberForm(m = {}) {
@@ -1085,6 +1112,19 @@ const actions = {
     commit('Entry deleted');
   },
 
+  'add-viewer': () => {
+    const input = document.getElementById('viewer-email');
+    const emails = input.value.split(/[s,;]+/).map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (!emails.length) return;
+    const bad = emails.find(e => !/^[^@s]+@[^@s]+.[^@s]+$/.test(e));
+    if (bad) return alert(`"${bad}" doesn't look like an email address.`);
+    const next = [...new Set([...cloud.viewers, ...emails])];
+    window.cloudSetViewers(next).then(() => toast(`Added ${emails.join(', ')}`)).catch(err => alert('Could not save: ' + err.message));
+  },
+  'remove-viewer': ({ email }) => {
+    if (!confirm(`Remove ${email}? They won't be able to open the fund anymore.`)) return;
+    window.cloudSetViewers(cloud.viewers.filter(e => e !== email)).then(() => toast('Removed')).catch(err => alert('Could not save: ' + err.message));
+  },
   'toggle-paid': () => { ui.showPaidLoans = !ui.showPaidLoans; render(); },
   'toggle-remaining': () => { ui.includeRemainingDues = !ui.includeRemainingDues; render(); },
   print: () => window.print(),
@@ -1211,7 +1251,7 @@ view.addEventListener('click', e => {
   if (EDIT_ACTIONS.has(el.dataset.action) && !canEdit()) return toast('View only');
   actions[el.dataset.action]?.(el.dataset);
 });
-document.getElementById('auth-box').addEventListener('click', e => {
+document.addEventListener('click', e => {
   const btn = e.target.closest('[data-auth]');
   if (!btn) return;
   const fn = btn.dataset.auth === 'in' ? window.cloudSignIn : window.cloudSignOut;

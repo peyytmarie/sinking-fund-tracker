@@ -1,15 +1,33 @@
 rules_version = '2';
 
-// Template: replace the placeholder email with the admin's Google account, then paste into
+// Template: replace admin@example.com with the admin's Google account, then paste into
 // Firebase console → Firestore → Rules and Publish. Keep the real email out of this public repo.
-// Anyone with the link can read the fund; only the listed Google accounts can change it.
+//
+// - The fund can be read only by the admin and by emails listed in access/viewers.
+// - Only the admin can change the fund or the viewer list (from the app's Settings).
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function email() {
+      return request.auth.token.email.lower();
+    }
+    function isAdmin() {
+      return signedIn() && email() in ['admin@example.com'];
+    }
+    function isViewer() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/access/viewers)
+        && email() in get(/databases/$(database)/documents/access/viewers).data.emails;
+    }
+
     match /funds/{fundId} {
-      allow read: if true;
-      allow write: if request.auth != null
-        && request.auth.token.email_verified == true
-        && request.auth.token.email.lower() in ['your.email@gmail.com'];
+      allow read: if isAdmin() || isViewer();
+      allow write: if isAdmin();
+    }
+    match /access/{docId} {
+      allow read, write: if isAdmin();
     }
   }
 }

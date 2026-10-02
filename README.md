@@ -5,8 +5,8 @@ A simple offline web app for tracking a group sinking fund: member contributions
 ## Two ways to run it
 
 **Online (shared with members):** the app is hosted on GitHub Pages and the data is stored in Firebase Firestore.
-- Anyone with the link can **view** the fund.
-- Only admin Google accounts can **edit**: they're listed as hashes in `firebase-config.js`, and enforced by the Firestore rules in the Firebase console. Sign in with the **Admin sign in** button.
+- The fund is **private**: only Google accounts you add in **Settings → Who can view** (plus the admin) can open it, in view-only mode. Anyone else sees a sign-in screen.
+- Only admin Google accounts can **edit**. They're listed as hashes in `firebase-config.js`, and the Firestore rules in the Firebase console enforce this. Everyone uses the **Sign in** button.
 
 **Local only:** if `firebase-config.js` still has the `PASTE_...` placeholders, or you double-click `index.html` on your computer, the app runs offline.
 - Data is saved in that browser only.
@@ -29,7 +29,7 @@ In both modes, use **Settings → Export backup** regularly and keep the `.json`
    - In the local copy, go to **Settings → Export backup**.
    - On the website, **Admin sign in**, then **Settings → Import backup**.
 
-**Privacy:** anyone who has the link can see members' names and amounts. Share it only in your group chat, and consider using nicknames.
+**Privacy:** the viewer list lives in Firestore (`access/viewers`), not in this repo. Friends need a Google account. Online, the app keeps no copy of the data in the browser.
 
 ## Fund rules built in
 
