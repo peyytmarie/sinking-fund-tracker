@@ -105,6 +105,12 @@ const Y = () => String(S().year);
 const inYear = r => r.date && r.date.slice(0, 4) === Y();
 const memberById = id => state.members.find(m => m.id === id);
 const memberName = id => memberById(id)?.name || '(removed member)';
+// A member whose start date is in a later year is "joining next cycle": they don't count in this year's
+// heads, dues, interest sharing or payouts, and become active automatically when that year comes.
+const startYear = m => (m.joined ? Number(m.joined.slice(0, 4)) : 0);
+const isActive = m => startYear(m) <= Number(Y());
+const activeMembers = () => state.members.filter(isActive);
+const upcomingMembers = () => state.members.filter(m => !isActive(m));
 const openingCarryOver = () => Number(S().openingByYear[Y()] || 0);
 const rateFor = term => Number(S().rates[term] || 0);
 const minDues = m => round2((Number(m.heads) || 0) * S().perHead);
@@ -132,6 +138,7 @@ function paydaysOfYear() {
 }
 /** Paydays due so far that a member hasn't fully covered, with the shortfall for each. */
 function unpaidPaydays(m, asOf = todayISO()) {
+  if (!isActive(m)) return [];
   const joined = m.joined && m.joined.slice(0, 4) === Y() ? `${m.joined.slice(0, 7)}-01` : '';
   const mine = state.contributions.filter(c => c.memberId === m.id);
   return paydaysOfYear()
@@ -205,7 +212,7 @@ function periodsDue(asOf, joined) {
 function compute({ includeRemainingDues = false } = {}) {
   const s = S();
   const today = todayISO();
-  const members = state.members;
+  const members = activeMembers();
   const totalHeads = sum(members, m => m.heads);
   const loanInfos = state.loans.map(l => loanInfo(l, today));
   const infoById = new Map(loanInfos.map(li => [li.loan.id, li]));
@@ -352,8 +359,8 @@ modalForm.addEventListener('click', e => {
   modalActions[btn.dataset.modalAction]?.(btn.dataset);
 });
 
-function memberOptions(selected, placeholder = 'Select member…') {
-  const opts = [...state.members].sort((a, b) => a.name.localeCompare(b.name))
+function memberOptions(selected, placeholder = 'Select member…', all = false) {
+  const opts = state.members.filter(m => all || isActive(m) || m.id === selected).sort((a, b) => a.name.localeCompare(b.name))
     .map(m => `<option value="${m.id}" ${m.id === selected ? 'selected' : ''}>${esc(m.name)} (${m.heads} head${m.heads == 1 ? '' : 's'})</option>`).join('');
   return `<option value="">${esc(placeholder)}</option>${opts}`;
 }
@@ -405,7 +412,7 @@ function render() {
   document.body.classList.toggle('gated', gated);
   document.getElementById('fund-name').textContent = s.fundName;
   const updated = state.updatedAt ? ` · updated ${new Date(state.updatedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}` : '';
-  document.getElementById('fund-year').textContent = gated ? 'Private fund' : `Fund year ${s.year} · ${state.members.length} members · ${sum(state.members, m => m.heads)} heads${updated}`;
+  document.getElementById('fund-year').textContent = gated ? 'Private fund' : `Fund year ${s.year} · ${activeMembers().length} members · ${sum(activeMembers(), m => m.heads)} heads${upcomingMembers().length ? ` · ${upcomingMembers().length} joining later` : ''}${updated}`;
   document.title = `${s.fundName} · ${s.year}`;
   // Settings is for the admin only.
   const tab = ui.tab === 'settings' && !canEdit() ? 'dashboard' : ui.tab;
@@ -565,7 +572,7 @@ const views = {
           <div class="hero-stats">
             <div><span>Cash on hand</span><b>${fmt(c.cash)}</b></div>
             <div><span>Out on loans</span><b>${fmt(c.principalOutstanding)}</b></div>
-            <div><span>Members</span><b>${state.members.length} · ${c.totalHeads} heads</b></div>
+            <div><span>Members</span><b>${c.rows.length} · ${c.totalHeads} heads</b></div>
           </div>
         </div>
         <div class="countdown">
@@ -576,7 +583,7 @@ const views = {
       </section>
 
       <section class="section stat-strip">
-        <div class="card stat"><div class="ico">🪙</div><div><div class="label">Contributions ${Y()}</div><div class="value">${fmt(c.totalContrib)}</div><div class="hint">${fmt(sum(state.members, duesOf))} due every ${perPayday()}</div></div></div>
+        <div class="card stat"><div class="ico">🪙</div><div><div class="label">Contributions ${Y()}</div><div class="value">${fmt(c.totalContrib)}</div><div class="hint">${fmt(sum(activeMembers(), duesOf))} due every ${perPayday()}</div></div></div>
         <div class="card stat"><div class="ico gold">📈</div><div><div class="label">Interest earned</div><div class="value">${fmt(c.interestCollected)}</div><div class="hint">${fmt(c.interestTotal)} incl. open loans</div></div></div>
         <div class="card stat"><div class="ico">🤝</div><div><div class="label">Earnings per head (proj.)</div><div class="value">${fmt(c.earningsPerHead)}</div><div class="hint">shared equally by ${c.totalHeads} heads</div></div></div>
         <div class="card stat"><div class="ico gold">🌱</div><div><div class="label">Carry-over to ${year + 1}</div><div class="value">${fmt(c.retained)}</div><div class="hint">${S().retentionPct}% kept for next year</div></div></div>
@@ -638,6 +645,7 @@ const views = {
             </button>`;
           }).join('')}
         </div>
+        ${upcomingMembers().length ? `<p class="small muted" style="margin-top:8px">🗓️ Joining a later cycle: ${upcomingMembers().map(m => `<strong>${esc(m.name)}</strong> (${startYear(m)})`).join(', ')}. They're not part of ${Y()}'s numbers.</p>` : ''}
         <p class="small muted" style="margin-top:8px">Tap a member to see their full statement. Shares include contributions + interest per head, minus the ${S().retentionPct}% carry-over and any unpaid loan.</p>
       </section>
 
@@ -664,20 +672,20 @@ const views = {
         ${state.members.length ? `<div class="card table-wrap"><table>
           <thead><tr><th>Name</th><th class="num">Heads</th><th class="num">Amount per ${perPayday()}</th><th>Joined</th>
             <th class="num">Contributed ${Y()}</th><th class="num">Loan balance</th><th>Notes</th><th></th></tr></thead>
-          <tbody>${c.rows.map(r => `<tr>
-            <td><strong>${esc(r.member.name)}</strong></td>
+          <tbody>${[...c.rows, ...upcomingMembers().map(m => ({ member: m, heads: m.heads, contrib: 0, loanBalance: 0, upcoming: true }))].map(r => `<tr>
+            <td><strong>${esc(r.member.name)}</strong>${r.upcoming ? ` <span class="badge accent">Joins ${startYear(r.member)}</span>` : ''}</td>
             <td class="num">${r.heads}</td>
             <td class="num">${fmt(duesOf(r.member))}</td>
             <td>${r.member.joined ? fmtDate(r.member.joined) : '<span class="muted">—</span>'}</td>
-            <td class="num">${fmt(r.contrib)}</td>
+            <td class="num">${r.upcoming ? '<span class="muted">—</span>' : fmt(r.contrib)}</td>
             <td class="num">${r.loanBalance > EPS ? fmt(r.loanBalance) : '<span class="muted">—</span>'}</td>
             <td class="muted">${esc(r.member.notes || '')}</td>
             <td><div class="row-actions">
-              <button class="sm" data-action="statement" data-id="${r.member.id}">Statement</button>
+              ${r.upcoming ? '' : `<button class="sm" data-action="statement" data-id="${r.member.id}">Statement</button>`}
               <button class="sm" data-action="edit-member" data-id="${r.member.id}">Edit</button>
               <button class="sm danger" data-action="delete-member" data-id="${r.member.id}">Delete</button>
             </div></td></tr>`).join('')}</tbody>
-          <tfoot><tr><td>${state.members.length} members</td><td class="num">${c.totalHeads}</td><td class="num">${fmt(sum(state.members, duesOf))}</td><td colspan="5"></td></tr></tfoot>
+          <tfoot><tr><td>${c.rows.length} active${upcomingMembers().length ? ` · ${upcomingMembers().length} joining later` : ''}</td><td class="num">${c.totalHeads}</td><td class="num">${fmt(sum(activeMembers(), duesOf))}</td><td colspan="5"></td></tr></tfoot>
         </table></div>` : emptyState('No members yet.', '<button class="primary" data-action="add-member">Add first member</button>')}
         <p class="small muted" style="margin-top:6px">Each member chooses a fixed amount per ${perPayday()} (minimum ${fmt(S().perHead)} per head). Interest is shared equally per head, whatever the amount.</p>
       </section>`;
@@ -690,7 +698,7 @@ const views = {
     const startM = Number(S().startMonth) || 1;
     const months = MONTHS.map((n, i) => i + 1).filter(m => m >= startM);
     const contribsY = state.contributions.filter(inYear);
-    const grid = state.members.map(m => {
+    const grid = activeMembers().map(m => {
       const cells = months.map(mo => round2(sum(contribsY.filter(x => x.memberId === m.id && Number(periodOf(x).slice(5, 7)) === mo), x => x.amount)));
       return { m, cells, total: round2(sum(cells, x => x)) };
     });
@@ -723,7 +731,7 @@ const views = {
 
       <section class="section">
         <div class="section-head"><h3>All entries</h3>
-          <select class="filter" data-action="contrib-filter">${memberOptions(ui.contribFilter, 'All members')}</select>
+          <select class="filter" data-action="contrib-filter">${memberOptions(ui.contribFilter, 'All members', true)}</select>
         </div>
         ${list.length ? `<div class="card table-wrap"><table>
           <thead><tr><th>Date paid</th><th>Member</th><th>For payday</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
@@ -988,8 +996,8 @@ function memberForm(m = {}) {
         <div class="help">Each head gets an equal share of interest</div></div>
       <div class="field"><label for="f-amount">Amount per ${perPayday()} (₱)</label><input id="f-amount" name="amount" type="number" min="0" step="0.01" value="${m.id ? duesOf(m) : S().perHead}">
         <div class="help" id="f-min-help"></div></div>
-      <div class="field"><label for="f-joined">Joined (optional)</label><input id="f-joined" name="joined" type="date" value="${m.joined || ''}">
-        <div class="help">Dues are counted from this month</div></div>
+      <div class="field"><label for="f-joined">Start date (optional)</label><input id="f-joined" name="joined" type="date" value="${m.joined || ''}">
+        <div class="help">Dues count from this month. For someone joining next cycle, pick a date in ${Number(Y()) + 1} (e.g. Jan 1).</div></div>
     </div>
     <div class="field"><label for="f-notes">Notes</label><input id="f-notes" name="notes" value="${esc(m.notes || '')}"></div>`;
 }
@@ -1148,6 +1156,7 @@ function loanDetails(li) {
 function statement(m) {
   const c = compute();
   const r = c.rows.find(x => x.member.id === m.id);
+  if (!r) return `<p>${esc(m.name)} joins in ${startYear(m)}, so there's nothing for ${Y()} yet.</p>`;
   const contribs = state.contributions.filter(x => inYear(x) && x.memberId === m.id).sort(byDate);
   const unpaid = unpaidPaydays(m);
   const loans = c.loanInfos.filter(li => li.loan.memberId === m.id && (inYear(li.loan) || li.balance > EPS)).sort((a, b) => byDate(a.loan, b.loan));
@@ -1191,7 +1200,7 @@ function bulkForm() {
     <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" placeholder="optional"></div>
     <p class="small muted" style="margin-bottom:8px">Each checked member is recorded for their own amount per ${perPayday()}.</p>
     <div class="checklist">
-      ${[...state.members].sort((a, b) => a.name.localeCompare(b.name)).map(m => `
+      ${activeMembers().sort((a, b) => a.name.localeCompare(b.name)).map(m => `
         <label><input type="checkbox" name="ids" value="${m.id}" checked> ${esc(m.name)} <span class="amt num muted">${fmt(duesOf(m))}</span></label>`).join('')}
     </div>`;
 }

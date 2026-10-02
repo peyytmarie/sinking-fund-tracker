@@ -61,7 +61,7 @@ Last year's carry-over is shared per head along with the interest, so the fund n
 ## Typical workflow
 
 1. **Settings:** set the fund name, minimum per head per payday, schedule, and starting month.
-2. **Members:** add each member with their number of heads and their chosen amount per payday. Set "Joined" if they started mid-year.
+2. **Members:** add each member with their number of heads and their chosen amount per payday. Set a **Start date** if they started mid-year. For someone joining next cycle, use a date in next year: they stay out of this year's heads, dues and payouts, and become active when you close the year.
 3. Each payday, go to **Contributions → Record dues for many**. Uncheck anyone who didn't pay.
 4. **Loans → New loan** to release a loan (the schedule preview shows due dates). Click **Pay** when installments come in.
 5. **Ledger:** record bank fees or other income, or export a CSV.
