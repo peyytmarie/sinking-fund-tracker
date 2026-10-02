@@ -112,6 +112,39 @@ const minDues = m => round2((Number(m.heads) || 0) * S().perHead);
 const duesOf = m => Math.max(round2(Number(m.amount) || 0), minDues(m));
 const perPayday = () => (S().frequency === 'monthly' ? 'month' : 'payday');
 
+// Paydays are keyed "2026-06-2" (June, 2nd payday). A contribution's `period` says which payday it pays for,
+// which can differ from the date it was paid (late payments). Monthly funds use "-1" only.
+const isMonthly = () => S().frequency === 'monthly';
+const paydayFromDate = iso => `${iso.slice(0, 7)}-${isMonthly() || Number(iso.slice(8, 10)) <= 15 ? 1 : 2}`;
+const periodOf = c => c.period || paydayFromDate(c.date);
+function paydayLabel(p) {
+  const [y, m, n] = p.split('-');
+  return isMonthly() ? `${MONTHS[m - 1]} ${y}` : `${MONTHS[m - 1]} ${n === '1' ? '1st' : '2nd'}`;
+}
+function paydayDueDate(p) {
+  const [y, m, n] = p.split('-').map(Number);
+  return n === 1 && !isMonthly() ? `${y}-${pad(m)}-15` : toISO(new Date(y, m, 0));
+}
+function paydaysOfYear() {
+  const out = [];
+  for (let m = Number(S().startMonth) || 1; m <= 12; m++) for (const n of isMonthly() ? [1] : [1, 2]) out.push(`${Y()}-${pad(m)}-${n}`);
+  return out;
+}
+/** Paydays due so far that a member hasn't fully covered, with the shortfall for each. */
+function unpaidPaydays(m, asOf = todayISO()) {
+  const joined = m.joined && m.joined.slice(0, 4) === Y() ? `${m.joined.slice(0, 7)}-01` : '';
+  const mine = state.contributions.filter(c => c.memberId === m.id);
+  return paydaysOfYear()
+    .filter(p => paydayDueDate(p) <= asOf && (!joined || paydayDueDate(p) >= joined))
+    .map(p => ({ p, short: round2(duesOf(m) - sum(mine.filter(c => periodOf(c) === p), c => c.amount)) }))
+    .filter(x => x.short > EPS);
+}
+function paydayOptions(selected) {
+  const list = paydaysOfYear();
+  if (selected && !list.includes(selected)) list.unshift(selected);
+  return list.map(p => `<option value="${p}" ${p === selected ? 'selected' : ''}>${paydayLabel(p)}${p.slice(0, 4) !== Y() ? ' ' + p.slice(0, 4) : ''}</option>`).join('');
+}
+
 // ---------- calculations ----------
 function loanInfo(loan, asOf = todayISO()) {
   const principal = Number(loan.principal);
@@ -252,7 +285,7 @@ function ledgerRows() {
   const infoById = new Map(state.loans.map(l => [l.id, loanInfo(l)]));
   const rows = [];
   for (const c of state.contributions.filter(inYear)) {
-    rows.push({ date: c.date, ts: c.ts, kind: 'Contribution', who: memberName(c.memberId), desc: c.note || '', inAmt: c.amount, outAmt: 0 });
+    rows.push({ date: c.date, ts: c.ts, kind: 'Contribution', who: memberName(c.memberId), desc: `For ${paydayLabel(periodOf(c))}${c.note ? ' · ' + c.note : ''}`, inAmt: c.amount, outAmt: 0 });
   }
   for (const l of state.loans.filter(inYear)) {
     rows.push({ date: l.date, ts: l.ts, kind: 'Loan released', who: memberName(l.memberId), desc: `${l.term} mo @ ${l.rate}%/mo${l.note ? ' · ' + l.note : ''}`, inAmt: 0, outAmt: l.principal });
@@ -658,7 +691,7 @@ const views = {
     const months = MONTHS.map((n, i) => i + 1).filter(m => m >= startM);
     const contribsY = state.contributions.filter(inYear);
     const grid = state.members.map(m => {
-      const cells = months.map(mo => round2(sum(contribsY.filter(x => x.memberId === m.id && Number(x.date.slice(5, 7)) === mo), x => x.amount)));
+      const cells = months.map(mo => round2(sum(contribsY.filter(x => x.memberId === m.id && Number(periodOf(x).slice(5, 7)) === mo), x => x.amount)));
       return { m, cells, total: round2(sum(cells, x => x)) };
     });
     const monthlyDue = m => duesOf(m) * (S().frequency === 'monthly' ? 1 : 2);
@@ -685,7 +718,7 @@ const views = {
             <tfoot><tr><td>Total</td>${months.map((m, i) => `<td class="num">${fmt(sum(grid, g => g.cells[i]))}</td>`).join('')}<td class="num">${fmt(sum(grid, g => g.total))}</td></tr></tfoot>
           </table>
         </div>
-        <p class="small muted" style="margin-top:6px">Green = full monthly dues paid, orange = partial.</p>` : emptyState('Add members first.')}
+        <p class="small muted" style="margin-top:6px">Grouped by the payday each contribution is <em>for</em>, so late payments count toward the month they cover. Green = full monthly dues, orange = partial.</p>` : emptyState('Add members first.')}
       </section>
 
       <section class="section">
@@ -693,15 +726,17 @@ const views = {
           <select class="filter" data-action="contrib-filter">${memberOptions(ui.contribFilter, 'All members')}</select>
         </div>
         ${list.length ? `<div class="card table-wrap"><table>
-          <thead><tr><th>Date</th><th>Member</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
+          <thead><tr><th>Date paid</th><th>Member</th><th>For payday</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead>
           <tbody>${list.map(x => `<tr>
-            <td>${fmtDate(x.date)}</td><td>${esc(memberName(x.memberId))}</td><td class="num">${fmt(x.amount)}</td>
+            <td>${fmtDate(x.date)}</td><td>${esc(memberName(x.memberId))}</td>
+            <td>${paydayLabel(periodOf(x))}${periodOf(x).slice(0, 7) < x.date.slice(0, 7) ? ' <span class="badge warn">paid late</span>' : ''}</td>
+            <td class="num">${fmt(x.amount)}</td>
             <td class="muted">${esc(x.note || '')}</td>
             <td><div class="row-actions">
               <button class="sm" data-action="edit-contribution" data-id="${x.id}">Edit</button>
               <button class="sm danger" data-action="delete-contribution" data-id="${x.id}">Delete</button>
             </div></td></tr>`).join('')}</tbody>
-          <tfoot><tr><td colspan="2">${list.length} entries</td><td class="num">${fmt(sum(list, x => x.amount))}</td><td colspan="2"></td></tr></tfoot>
+          <tfoot><tr><td colspan="3">${list.length} entries</td><td class="num">${fmt(sum(list, x => x.amount))}</td><td colspan="2"></td></tr></tfoot>
         </table></div>` : emptyState('No contributions recorded.')}
       </section>`;
   },
@@ -991,15 +1026,28 @@ function contributionForm(x = {}) {
     <div class="field"><label for="f-member">Member</label><select id="f-member" name="memberId" required>${memberOptions(x.memberId)}</select></div>
     <div class="fields">
       <div class="field"><label for="f-date">Date</label><input id="f-date" name="date" type="date" value="${x.date || defaultDateInYear()}" required></div>
+      <div class="field"><label for="f-period">For payday</label><select id="f-period" name="period">${paydayOptions(x.date ? periodOf(x) : paydayFromDate(defaultDateInYear()))}</select>
+        <div class="help">Change this for late payments</div></div>
       <div class="field"><label for="f-amount">Amount (₱)</label><input id="f-amount" name="amount" type="number" min="0.01" step="0.01" value="${x.amount ?? (m ? duesOf(m) : '')}" required>
         <div class="help" id="f-due-help"></div></div>
     </div>
     <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" value="${esc(x.note || '')}" placeholder="e.g. Oct 15 dues, GCash"></div>`;
 }
 
+/** Keeps "For payday" following the date until the user picks a different payday. */
+function syncPeriod(form, ps) {
+  if (!form.date.value) return;
+  const auto = paydayFromDate(form.date.value);
+  if (ps.lastAuto === undefined) ps.lastAuto = form.period.value;
+  if (form.period.value === ps.lastAuto && [...form.period.options].some(o => o.value === auto)) form.period.value = auto;
+  ps.lastAuto = auto;
+}
+
 function contributionInput(isEdit) {
   let lastMember = null;
+  const ps = {};
   return form => {
+    syncPeriod(form, ps);
     const m = memberById(form.memberId.value);
     form.querySelector('#f-due-help').textContent = m ? `Their amount per ${perPayday()}: ${fmt(duesOf(m))}` : '';
     if (!isEdit && m && m.id !== lastMember) form.amount.value = duesOf(m);
@@ -1014,7 +1062,7 @@ function saveContribution(existing) {
     if (!d.date) return fail('Please enter a date.');
     if (!(amount > 0)) return fail('Amount must be more than zero.');
     if (d.date.slice(0, 4) !== Y() && !confirm(`This date is outside the active fund year (${Y()}). It will not count toward ${Y()}. Save anyway?`)) return false;
-    const rec = { memberId: d.memberId, date: d.date, amount, note: d.note.trim() };
+    const rec = { memberId: d.memberId, date: d.date, period: d.period || paydayFromDate(d.date), amount, note: d.note.trim() };
     if (existing) Object.assign(existing, rec);
     else state.contributions.push({ id: uid(), ts: Date.now(), ...rec });
     commit(existing ? 'Contribution updated' : `Contribution of ${fmt(amount)} recorded`);
@@ -1101,6 +1149,7 @@ function statement(m) {
   const c = compute();
   const r = c.rows.find(x => x.member.id === m.id);
   const contribs = state.contributions.filter(x => inYear(x) && x.memberId === m.id).sort(byDate);
+  const unpaid = unpaidPaydays(m);
   const loans = c.loanInfos.filter(li => li.loan.memberId === m.id && (inYear(li.loan) || li.balance > EPS)).sort((a, b) => byDate(a.loan, b.loan));
   return `
     <p class="muted" style="margin-bottom:12px">${esc(S().fundName)} · Fund year ${Y()} · as of ${fmtDate(todayISO())}</p>
@@ -1115,11 +1164,15 @@ function statement(m) {
       <span>Less ${S().retentionPct}% carry-over</span><span class="num">− ${fmt(r.retainedShare)}</span>
       <span class="total">Projected December payout</span><span class="num total">${fmt(r.payout)}</span>
     </div>
+    <h3 style="margin-bottom:8px">Unpaid paydays</h3>
+    <div class="alerts" style="margin-bottom:16px">${unpaid.length
+      ? unpaid.map(u => `<span class="alert-chip warn">${paydayLabel(u.p)} · ${u.short + EPS < duesOf(m) ? 'short ' : ''}${fmt(u.short)}</span>`).join('')
+      : '<span class="alert-chip good">✅ All paydays so far are paid</span>'}</div>
     <h3 style="margin-bottom:8px">Contributions</h3>
     ${contribs.length ? `<div class="table-wrap" style="margin-bottom:16px"><table>
-      <thead><tr><th>Date</th><th class="num">Amount</th><th>Note</th></tr></thead>
-      <tbody>${contribs.map(x => `<tr><td>${fmtDate(x.date)}</td><td class="num">${fmt(x.amount)}</td><td class="muted">${esc(x.note || '')}</td></tr>`).join('')}</tbody>
-      <tfoot><tr><td>Total</td><td class="num">${fmt(r.contrib)}</td><td></td></tr></tfoot>
+      <thead><tr><th>Date paid</th><th>For payday</th><th class="num">Amount</th><th>Note</th></tr></thead>
+      <tbody>${contribs.map(x => `<tr><td>${fmtDate(x.date)}</td><td>${paydayLabel(periodOf(x))}</td><td class="num">${fmt(x.amount)}</td><td class="muted">${esc(x.note || '')}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td colspan="2">Total</td><td class="num">${fmt(r.contrib)}</td><td></td></tr></tfoot>
     </table></div>` : '<p class="muted" style="margin-bottom:16px">None yet.</p>'}
     <h3 style="margin-bottom:8px">Loans</h3>
     ${loans.length ? `<div class="table-wrap"><table>
@@ -1132,9 +1185,10 @@ function statement(m) {
 function bulkForm() {
   return `
     <div class="fields">
-      <div class="field"><label for="f-date">Date</label><input id="f-date" name="date" type="date" value="${defaultDateInYear()}" required></div>
-      <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" placeholder="e.g. Oct 15 dues"></div>
+      <div class="field"><label for="f-date">Date paid</label><input id="f-date" name="date" type="date" value="${defaultDateInYear()}" required></div>
+      <div class="field"><label for="f-period">For payday</label><select id="f-period" name="period">${paydayOptions(paydayFromDate(defaultDateInYear()))}</select></div>
     </div>
+    <div class="field"><label for="f-note">Note</label><input id="f-note" name="note" placeholder="optional"></div>
     <p class="small muted" style="margin-bottom:8px">Each checked member is recorded for their own amount per ${perPayday()}.</p>
     <div class="checklist">
       ${[...state.members].sort((a, b) => a.name.localeCompare(b.name)).map(m => `
@@ -1174,7 +1228,7 @@ const actions = {
     commit('Contribution deleted');
   },
   'bulk-contribution': () => openModal({
-    title: 'Record dues for many members', body: bulkForm(), submitLabel: 'Record',
+    title: 'Record dues for many members', body: bulkForm(), submitLabel: 'Record', onInput: (ps => form => syncPeriod(form, ps))({}),
     onSubmit: (d, fd) => {
       const ids = fd.getAll('ids');
       if (!d.date) return fail('Please enter a date.');
@@ -1182,7 +1236,7 @@ const actions = {
       const ts = Date.now();
       ids.forEach((id, i) => {
         const m = memberById(id);
-        state.contributions.push({ id: uid(), ts: ts + i, memberId: id, date: d.date, amount: duesOf(m), note: d.note.trim() });
+        state.contributions.push({ id: uid(), ts: ts + i, memberId: id, date: d.date, period: d.period || paydayFromDate(d.date), amount: duesOf(m), note: d.note.trim() });
       });
       commit(`Recorded dues for ${ids.length} member${ids.length > 1 ? 's' : ''}`);
     },
