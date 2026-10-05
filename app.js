@@ -1373,9 +1373,9 @@ const actions = {
 
   'add-viewer': () => {
     const input = document.getElementById('viewer-email');
-    const emails = input.value.split(/[s,;]+/).map(e => e.trim().toLowerCase()).filter(Boolean);
+    const emails = input.value.split(/[\s,;]+/).map(e => e.trim().toLowerCase()).filter(Boolean);
     if (!emails.length) return;
-    const bad = emails.find(e => !/^[^@s]+@[^@s]+.[^@s]+$/.test(e));
+    const bad = emails.find(e => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
     if (bad) return alert(`"${bad}" doesn't look like an email address.`);
     const next = [...new Set([...cloud.viewers, ...emails])];
     window.cloudSetViewers(next).then(() => toast(`Added ${emails.join(', ')}`)).catch(err => alert('Could not save: ' + err.message));
