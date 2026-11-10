@@ -53,6 +53,7 @@ function defaultState() {
     loans: [],         // { id, memberId, date, principal, term, rate, note, ts }
     payments: [],      // { id, loanId, date, amount, note, ts }
     others: [],        // { id, date, type: 'in'|'out', amount, description, ts }
+    deductions: [],    // { id, date, amount, description, memberIds, ts } money taken out of the fund for a group purpose; memberIds = who shares it (empty = everyone)
     history: [],       // closed-year snapshots
   };
 }
@@ -216,6 +217,12 @@ function periodsDue(asOf, joined) {
   return count;
 }
 
+/** Active members who share a deduction: the ones picked for it, or everyone if none were picked. */
+function deductionSharers(x, members = activeMembers()) {
+  const picked = members.filter(m => (x.memberIds || []).includes(m.id));
+  return picked.length ? picked : members;
+}
+
 function compute({ includeRemainingDues = false } = {}) {
   const s = S();
   const today = todayISO();
@@ -228,6 +235,7 @@ function compute({ includeRemainingDues = false } = {}) {
   const loansY = state.loans.filter(inYear);
   const paysY = state.payments.filter(inYear);
   const othersY = state.others.filter(inYear);
+  const deductionsY = state.deductions.filter(inYear);
 
   const opening = openingCarryOver();
   const totalContrib = round2(sum(contribsY, c => c.amount));
@@ -240,8 +248,9 @@ function compute({ includeRemainingDues = false } = {}) {
   const otherIn = round2(sum(othersY.filter(o => o.type === 'in'), o => o.amount));
   const otherOut = round2(sum(othersY.filter(o => o.type === 'out'), o => o.amount));
   const otherNet = round2(otherIn - otherOut);
+  const totalDeducted = round2(sum(deductionsY, x => x.amount));
 
-  const cash = round2(opening + totalContrib + paymentsIn + otherIn - loansReleased - otherOut);
+  const cash = round2(opening + totalContrib + paymentsIn + otherIn - loansReleased - otherOut - totalDeducted);
   const openLoans = loanInfos.filter(li => li.balance > EPS);
   const principalOutstanding = round2(sum(openLoans, li => li.principalBalance));
   const interestReceivable = round2(sum(openLoans, li => li.interestBalance));
@@ -271,14 +280,23 @@ function compute({ includeRemainingDues = false } = {}) {
 
   const projectedContrib = round2(totalContrib + (includeRemainingDues ? sum(rows, r => r.remainingDues) : 0));
   const earningsPool = round2(opening + interestTotal + otherNet);
-  const totalBalance = round2(projectedContrib + earningsPool);
+  const totalBalance = round2(projectedContrib + earningsPool - totalDeducted);
   const retentionRate = (Number(s.retentionPct) || 0) / 100;
   const retained = round2(totalBalance * retentionRate);
   const distributable = round2(totalBalance - retained);
   const earningsPerHead = totalHeads ? earningsPool / totalHeads : 0;
+  // Deductions are taken from the contributions of the members sharing them, split equally per member
+  // whatever their heads (not from the earnings).
+  const deductionShares = new Map();
+  for (const x of deductionsY) {
+    const sharers = deductionSharers(x, members);
+    sharers.forEach(m => deductionShares.set(m.id, (deductionShares.get(m.id) || 0) + x.amount / sharers.length));
+  }
 
   for (const r of rows) {
-    const contribForShare = r.contrib + (includeRemainingDues ? r.remainingDues : 0);
+    r.deductionShare = round2(deductionShares.get(r.member.id) || 0);
+    r.netContribution = round2(r.contrib - r.deductionShare - r.loanBalance);
+    const contribForShare = r.contrib + (includeRemainingDues ? r.remainingDues : 0) - r.deductionShare;
     r.contribForShare = round2(contribForShare);
     r.earningsShare = round2(earningsPerHead * r.heads);
     r.grossShare = round2(contribForShare + r.earningsShare);
@@ -289,7 +307,7 @@ function compute({ includeRemainingDues = false } = {}) {
 
   return {
     today, totalHeads, opening, totalContrib, loansReleased, paymentsIn, interestCollected,
-    otherIn, otherOut, otherNet, cash, principalOutstanding, interestReceivable, fundValue,
+    otherIn, otherOut, otherNet, totalDeducted, cash, principalOutstanding, interestReceivable, fundValue,
     interestTotal, earningsPool, totalBalance, retained, distributable, earningsPerHead,
     retentionRate, projectedContrib, fullPeriods, rows, loanInfos, openLoans, infoById,
   };
@@ -312,6 +330,9 @@ function ledgerRows() {
   }
   for (const o of state.others.filter(inYear)) {
     rows.push({ date: o.date, ts: o.ts, kind: o.type === 'in' ? 'Other income' : 'Expense', who: '', desc: o.description || '', inAmt: o.type === 'in' ? o.amount : 0, outAmt: o.type === 'out' ? o.amount : 0 });
+  }
+  for (const x of state.deductions.filter(inYear)) {
+    rows.push({ date: x.date, ts: x.ts, kind: 'Deduction', who: '', desc: x.description || '', inAmt: 0, outAmt: x.amount });
   }
   rows.sort(byDate);
   let bal = openingCarryOver();
@@ -384,7 +405,7 @@ function parseAmount(v) { const n = round2(parseFloat(v)); return Number.isFinit
 const EDIT_ACTIONS = new Set([
   'add-member', 'edit-member', 'delete-member', 'add-contribution', 'edit-contribution', 'delete-contribution',
   'bulk-contribution', 'add-loan', 'pay-loan', 'add-other', 'delete-other', 'close-year', 'import-json', 'load-sample', 'reset',
-  'delete-payment', 'delete-loan', 'pay-from-details', 'add-viewer', 'remove-viewer',
+  'delete-payment', 'delete-loan', 'pay-from-details', 'add-viewer', 'remove-viewer', 'add-deduction', 'edit-deduction', 'delete-deduction',
 ]);
 
 function applyReadOnly(root) {
@@ -476,6 +497,7 @@ function growthSeries() {
   state.contributions.filter(inYear).forEach(c => add(c.date, c.amount));
   state.payments.filter(inYear).forEach(p => { const li = infoById.get(p.loanId); if (li) add(p.date, p.amount * li.interestShare); });
   state.others.filter(inYear).forEach(o => add(o.date, o.type === 'in' ? o.amount : -o.amount));
+  state.deductions.filter(inYear).forEach(x => add(x.date, -x.amount));
   const start = `${Y()}-01-01`;
   let v = openingCarryOver();
   const pts = [{ date: start, value: v }];
@@ -566,7 +588,7 @@ function updateCalc() {
       : `<span class="alert-chip bad">⛔ ${fmt(round2(amount - loanable))} over the loanable amount</span>`}</p>`;
 }
 
-const ACTIVITY_ICON = { 'Contribution': '🪙', 'Loan released': '💸', 'Loan payment': '↩️', 'Other income': '➕', 'Expense': '🧾' };
+const ACTIVITY_ICON = { 'Contribution': '🪙', 'Loan released': '💸', 'Loan payment': '↩️', 'Other income': '➕', 'Expense': '🧾', 'Deduction': '➖' };
 
 const views = {
   dashboard() {
@@ -597,7 +619,7 @@ const views = {
         <div>
           <div class="eyebrow">Total fund value · ${Y()}</div>
           <div class="figure">${fmt(c.fundValue)}</div>
-          <p class="tagline">The jar has earned <strong>${fmt(c.interestCollected)}</strong> in loan interest so far this year${c.interestReceivable > EPS ? `, with ${fmt(c.interestReceivable)} more on the way` : ''}.</p>
+          <p class="tagline">The jar has earned <strong>${fmt(c.interestCollected)}</strong> in loan interest so far this year${c.interestReceivable > EPS ? `, with ${fmt(c.interestReceivable)} more on the way` : ''}.${c.totalDeducted > EPS ? ` ${fmt(c.totalDeducted)} has been deducted for group expenses.` : ''}</p>
           <div class="hero-stats">
             <div><span>Cash on hand</span><b>${fmt(c.cash)}</b></div>
             <div><span>Out on loans</span><b>${fmt(c.principalOutstanding)}</b></div>
@@ -856,7 +878,7 @@ const views = {
             <button data-action="add-other" data-type="in">+ Other income</button>
           </div>
         </div>
-        <p class="muted small" style="margin-bottom:10px">Every peso in and out of the fund. Expenses (e.g. bank fees) and other income are shared per head together with interest.</p>
+        <p class="muted small" style="margin-bottom:10px">Every peso in and out of the fund. Expenses (e.g. bank fees) and other income are shared per head together with interest. Fund deductions (Settings) come out of members' contributions.</p>
         <div class="card table-wrap"><table>
           <thead><tr><th>Date</th><th>Type</th><th>Member</th><th>Details</th><th class="num">In</th><th class="num">Out</th><th class="num">Cash balance</th></tr></thead>
           <tbody>
@@ -898,6 +920,7 @@ const views = {
             <span>Member contributions${ui.includeRemainingDues ? ' (incl. remaining dues)' : ''}</span><span class="num">${fmt(c.projectedContrib)}</span>
             <span>Loan interest (collected ${fmt(c.interestCollected)} + to collect ${fmt(c.interestReceivable)})</span><span class="num">${fmt(c.interestTotal)}</span>
             ${c.otherNet ? `<span>Other income − expenses</span><span class="num">${fmt(c.otherNet)}</span>` : ''}
+            ${c.totalDeducted > EPS ? `<span>Fund deductions</span><span class="num bad">− ${fmt(c.totalDeducted)}</span>` : ''}
             <div class="sep"></div>
             <span class="big">Total fund balance</span><span class="num big">${fmt(c.totalBalance)}</span>
             <span>Retained for ${next} (${pct}%)</span><span class="num warn">− ${fmt(c.retained)}</span>
@@ -914,7 +937,7 @@ const views = {
             <span class="big">Per head (before ${pct}% retention)</span><span class="num big">${fmt(c.earningsPerHead)}</span>
           </div>
           <ul class="formula" style="margin:14px 0 0;padding-left:18px">
-            <li><strong>Gross share</strong> = own contributions + (per-head earnings × heads)</li>
+            <li><strong>Gross share</strong> = own contributions${c.totalDeducted > EPS ? ' − their share of fund deductions' : ''} + (per-head earnings × heads)</li>
             <li><strong>Net share</strong> = gross share − ${pct}% retained for ${next}</li>
             <li><strong>Payout</strong> = net share − any unpaid loan balance (deducted)</li>
           </ul>
@@ -930,11 +953,11 @@ const views = {
           </div>
         </div>
         <div class="card table-wrap"><table>
-          <thead><tr><th>Member</th><th class="num">Heads</th><th class="num">Contributions</th><th class="num">Earnings share</th>
+          <thead><tr><th>Member</th><th class="num">Heads</th><th class="num">Contributions${c.totalDeducted > EPS ? '<div class="small muted">less deductions</div>' : ''}</th><th class="num">Earnings share</th>
             <th class="num">Gross share</th><th class="num">Less ${pct}% retained</th><th class="num">Net share</th><th class="num">Less loan balance</th><th class="num">Payout</th></tr></thead>
           <tbody>${c.rows.map(r => `<tr>
             <td>${esc(r.member.name)}</td><td class="num">${r.heads}</td>
-            <td class="num">${fmt(r.contribForShare)}</td><td class="num">${fmt(r.earningsShare)}</td>
+            <td class="num">${fmt(r.contribForShare)}${r.deductionShare > EPS ? `<div class="small muted">− ${fmt(r.deductionShare)} deducted</div>` : ''}</td><td class="num">${fmt(r.earningsShare)}</td>
             <td class="num">${fmt(r.grossShare)}</td><td class="num warn">− ${fmt(r.retainedShare)}</td>
             <td class="num">${fmt(r.netShare)}</td>
             <td class="num ${r.loanBalance > EPS ? 'bad' : 'muted'}">${r.loanBalance > EPS ? '− ' + fmt(r.loanBalance) : '—'}</td>
@@ -966,7 +989,7 @@ const views = {
   settings() {
     const s = S();
     const years = new Set([Y(), String(new Date().getFullYear()), ...state.history.map(h => String(h.year)), ...state.history.map(h => String(h.year + 1))]);
-    for (const k of ['contributions', 'loans', 'payments', 'others']) state[k].forEach(r => r.date && years.add(r.date.slice(0, 4)));
+    for (const k of ['contributions', 'loans', 'payments', 'others', 'deductions']) state[k].forEach(r => r.date && years.add(r.date.slice(0, 4)));
     return `
       <section class="section grid-2">
         <form class="card pad" id="settings-form">
@@ -1014,6 +1037,7 @@ const views = {
               <input type="file" id="import-file" accept="application/json,.json" hidden>
             </div>
           </div>
+          ${deductionsCard()}
           ${cloud.enabled && cloud.canEdit ? viewersCard() : ''}
           <div class="card pad edit-only" style="margin-top:16px">
             <h2 style="margin-bottom:8px">Sample & reset</h2>
@@ -1027,6 +1051,28 @@ const views = {
       </section>`;
   },
 };
+
+function deductionsCard() {
+  const list = state.deductions.filter(inYear).sort(byDate);
+  return `
+    <div class="card pad" style="margin-top:16px">
+      <h2 style="margin-bottom:8px">Fund deductions</h2>
+      <p class="muted" style="margin-bottom:12px">Money taken out of the fund for a group purpose (e.g. a party downpayment). It lowers cash on hand and the total fund, and is split equally among the members sharing it (not by heads), taken from their contributions. Interest earnings are not affected.</p>
+      ${list.length ? `<div class="table-wrap" style="margin-bottom:12px"><table>
+        <thead><tr><th>Date</th><th>Purpose</th><th>Shared by</th><th class="num">Amount</th><th></th></tr></thead>
+        <tbody>${list.map(x => {
+          const sharers = deductionSharers(x);
+          const all = sharers.length === activeMembers().length;
+          return `<tr><td>${fmtDate(x.date)}</td><td>${esc(x.description)}</td>
+          <td class="small">${all ? 'Everyone' : esc(sharers.map(m => m.name).join(', '))}</td><td class="num">${fmt(x.amount)}</td>
+          <td><div class="row-actions"><button class="sm" data-action="edit-deduction" data-id="${x.id}">Edit</button>
+            <button class="sm danger" data-action="delete-deduction" data-id="${x.id}">Delete</button></div></td></tr>`;
+        }).join('')}</tbody>
+        <tfoot><tr><td colspan="3">Total deducted ${Y()}</td><td class="num">${fmt(sum(list, x => x.amount))}</td><td></td></tr></tfoot>
+      </table></div>` : `<p class="muted small" style="margin-bottom:12px">No deductions in ${Y()}.</p>`}
+      <div class="actions"><button data-action="add-deduction">+ Add deduction</button></div>
+    </div>`;
+}
 
 function viewersCard() {
   const list = [...cloud.viewers].sort();
@@ -1221,6 +1267,7 @@ function statement(m) {
       <span>Contributed</span><span class="num">${fmt(r.contrib)}</span>
       <span>Expected to date</span><span class="num">${fmt(r.expected)}</span>
       ${r.arrears > EPS ? `<span class="warn">Arrears</span><span class="num warn">${fmt(r.arrears)}</span>` : ''}
+      ${r.deductionShare > EPS ? `<span>Less share of fund deductions</span><span class="num">− ${fmt(r.deductionShare)}</span>` : ''}
       <span>Unpaid loan balance</span><span class="num">${fmt(r.loanBalance)}</span>
       <span class="total">Net contribution</span><span class="num total">${fmt(r.netContribution)}</span>
       <span>Earnings share (${r.heads} × ${fmt(c.earningsPerHead)})</span><span class="num">${fmt(r.earningsShare)}</span>
@@ -1257,6 +1304,50 @@ function bulkForm() {
       ${activeMembers().sort((a, b) => a.name.localeCompare(b.name)).map(m => `
         <label><input type="checkbox" name="ids" value="${m.id}" checked> ${esc(m.name)} <span class="amt num muted">${fmt(duesOf(m))}</span></label>`).join('')}
     </div>`;
+}
+
+function openDeduction(existing) {
+  const x = existing || {};
+  const lo = loanableOf(compute());
+  // While editing, the cash shown should not already have this deduction taken out.
+  const cash = round2(lo.cash + (existing && inYear(existing) ? existing.amount : 0));
+  const sharerIds = new Set(deductionSharers(x).map(m => m.id));
+  openModal({
+    title: existing ? 'Edit deduction' : 'Deduct from the fund', submitLabel: existing ? 'Save' : 'Deduct',
+    body: `
+      <div class="fields">
+        <div class="field"><label for="f-date">Date</label><input id="f-date" name="date" type="date" value="${x.date || defaultDateInYear()}" required></div>
+        <div class="field"><label for="f-amount">Amount (₱)</label><input id="f-amount" name="amount" type="number" min="0.01" step="0.01" value="${x.amount ?? ''}" required>
+          <div class="help">Cash on hand ${fmt(cash)} · loanable ${fmt(loanableOf({ cash }).amount)}</div></div>
+      </div>
+      <div class="field"><label for="f-desc">Purpose</label><input id="f-desc" name="description" value="${esc(x.description || '')}" placeholder="e.g. YEP resort downpayment" required></div>
+      <p class="small muted" style="margin-bottom:8px">Who shares this deduction? It's split equally among the checked members (not by heads) and taken from their contributions.</p>
+      <div class="checklist">
+        ${activeMembers().sort((a, b) => a.name.localeCompare(b.name)).map(m => `
+          <label><input type="checkbox" name="ids" value="${m.id}" ${sharerIds.has(m.id) ? 'checked' : ''}> ${esc(m.name)} <span class="amt num muted" data-share="${m.id}"></span></label>`).join('')}
+      </div>`,
+    onInput: form => {
+      const amount = parseAmount(form.amount.value) || 0;
+      const picked = activeMembers().filter(m => form.querySelector(`input[name=ids][value="${m.id}"]`)?.checked);
+      form.querySelectorAll('[data-share]').forEach(el => {
+        el.textContent = picked.some(p => p.id === el.dataset.share) ? fmt(amount / picked.length) : '—';
+      });
+    },
+    onSubmit: (d, fd) => {
+      const amount = parseAmount(d.amount);
+      const ids = fd.getAll('ids');
+      if (!d.date) return fail('Please enter a date.');
+      if (!(amount > 0)) return fail('Amount must be more than zero.');
+      if (!d.description.trim()) return fail('Please add the purpose.');
+      if (!ids.length) return fail('Check at least one member to share this deduction.');
+      if (d.date.slice(0, 4) !== Y() && !confirm(`This date is outside the active fund year (${Y()}). It will not count toward ${Y()}. Save anyway?`)) return false;
+      if (amount > cash + EPS && !confirm(`This is more than the cash on hand (${fmt(cash)}). Deduct anyway?`)) return false;
+      const rec = { date: d.date, amount, description: d.description.trim(), memberIds: ids.length === activeMembers().length ? [] : ids };
+      if (existing) Object.assign(existing, rec);
+      else state.deductions.push({ id: uid(), ts: Date.now(), ...rec });
+      commit(existing ? 'Deduction updated' : `${fmt(amount)} deducted from the fund`);
+    },
+  });
 }
 
 // ---------- actions ----------
@@ -1371,6 +1462,14 @@ const actions = {
     commit('Entry deleted');
   },
 
+  'add-deduction': () => openDeduction(null),
+  'edit-deduction': ({ id }) => openDeduction(state.deductions.find(o => o.id === id)),
+  'delete-deduction': ({ id }) => {
+    const x = state.deductions.find(o => o.id === id);
+    if (!confirm(`Delete the ${fmt(x.amount)} deduction for "${x.description}"? The money goes back into the fund totals.`)) return;
+    state.deductions = state.deductions.filter(o => o.id !== id);
+    commit('Deduction deleted');
+  },
   'add-viewer': () => {
     const input = document.getElementById('viewer-email');
     const emails = input.value.split(/[\s,;]+/).map(e => e.trim().toLowerCase()).filter(Boolean);
@@ -1419,9 +1518,9 @@ const actions = {
     const f = compute(); // recompute with loans settled
     state.history.push({
       year, closedOn: todayISO(),
-      totalBalance: f.totalBalance, interestTotal: f.interestTotal, retained: f.retained, distributable: f.distributable,
+      totalBalance: f.totalBalance, interestTotal: f.interestTotal, deducted: f.totalDeducted, retained: f.retained, distributable: f.distributable,
       earningsPerHead: f.earningsPerHead, totalHeads: f.totalHeads,
-      payouts: c.rows.map(r => ({ memberId: r.member.id, name: r.member.name, heads: r.heads, contrib: r.contrib, earningsShare: r.earningsShare, netShare: r.netShare, loanDeducted: r.loanBalance, payout: r.payout })),
+      payouts: c.rows.map(r => ({ memberId: r.member.id, name: r.member.name, heads: r.heads, contrib: r.contrib, deductionShare: r.deductionShare, earningsShare: r.earningsShare, netShare: r.netShare, loanDeducted: r.loanBalance, payout: r.payout })),
     });
     S().openingByYear[String(year + 1)] = f.retained;
     S().year = year + 1;

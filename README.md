@@ -45,14 +45,15 @@ You can change all of these in **Settings**. Each loan keeps the rate it was rel
 
 ## How the numbers are computed
 
-- **Cash on hand** = carry-over + contributions + loan payments + other income − loans released − expenses
+- **Cash on hand** = carry-over + contributions + loan payments + other income − loans released − expenses − deductions
 - **Total fund value** = cash on hand + unpaid loan principal
 - **Net contribution (per member)** = contributions − their unpaid loan balance
 - **Interest earned**: each loan payment is split between principal and interest in the same ratio as the loan (e.g. a 2-month loan is 800/10,800 interest)
 - **Year-end:**
-  - Total fund balance = carry-over + contributions + interest + (other income − expenses)
+  - Total fund balance = carry-over + contributions + interest + (other income − expenses) − deductions
   - Earnings pool = carry-over + interest + (other income − expenses), divided equally per head
-  - Gross share = own contributions + per-head earnings × heads
+  - Deductions are taken from the contributions of the members sharing them, split equally per member whatever their heads (each sharer's part = amount ÷ number of sharers). Each deduction can be shared by everyone or only some members.
+  - Gross share = own contributions − share of deductions + per-head earnings × heads
   - Net share = gross share − 10% (retained)
   - **Payout = net share − any unpaid loan balance**
 
@@ -65,6 +66,7 @@ Last year's carry-over is shared per head along with the interest, so the fund n
 3. Each payday, go to **Contributions → Record dues for many**. Uncheck anyone who didn't pay.
 4. **Loans → New loan** to release a loan (the schedule preview shows due dates). Click **Pay** when installments come in.
 5. **Ledger:** record bank fees or other income, or export a CSV.
+   - **Settings → Fund deductions:** record money taken out of the fund for a group purpose (e.g. a year-end party downpayment). Tick who shares it (everyone by default). It shows in the Ledger and is taken from the sharers' contributions, split equally per member.
 6. **December → Year-End:** review and print the payout sheet, then **Close year**. This:
    - downloads a backup,
    - marks open loans as paid by payout deduction,
